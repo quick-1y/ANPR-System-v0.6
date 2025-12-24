@@ -44,7 +44,10 @@ class MotionDetector:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        if self._previous_frame is None:
+        if self._previous_frame is None or self._previous_frame.shape != gray.shape:
+            self._motion_frames = 0
+            self._static_frames = 0
+            self._motion_active = False
             self._previous_frame = gray
             return False
 
