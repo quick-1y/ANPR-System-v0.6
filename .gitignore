@@ -1,0 +1,51 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.venv*/
+
+# Packaging and build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Testing and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.coverage
+htmlcov/
+.cache/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Application data and logs
+data/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Model weights and checkpoints
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Ultralytics/YOLO outputs
+runs/
