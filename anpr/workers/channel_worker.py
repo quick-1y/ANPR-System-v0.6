@@ -942,3 +942,9 @@ class ChannelWorker(QtCore.QThread):
         self.requestInterruption()
         if self._inference_task is not None:
             self._inference_task.cancel()
+            self._inference_task = None
+
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        """Принудительно останавливает общий пул процессов инференса."""
+        _shutdown_executors()
