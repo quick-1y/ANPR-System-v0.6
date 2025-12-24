@@ -1,0 +1,30 @@
+name: "Украина"
+code: "UA"
+priority: 2
+license_plate_formats:
+  - name: "standard"
+    regex: '^[ABCEHIKMOPTX]{2}\d{4}[ABCEHIKMOPTX]{2}$'
+  - name: "diplomatic"
+    regex: '^\d{3}[CD]\d{3}$'
+valid_characters:
+  letters: "ABCEHIKMOPTX"
+  digits: "0123456789"
+corrections:
+  digit_to_letter:
+    "0": "O"
+    "1": "I"
+    "3": "E"
+    "4": "A"
+    "5": "S"
+    "8": "B"
+  letter_to_digit:
+    "O": "0"
+  common_mistakes:
+    - from: "У"
+      to: "Y"
+stop_words:
+  - "TEST"
+  - "SAMPLE"
+invalid_sequences:
+  - "0000"
+  - "IIII"

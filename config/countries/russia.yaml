@@ -1,0 +1,31 @@
+#config/countries/russia.yaml
+name: "Российская Федерация"
+code: "RU"
+priority: 1
+license_plate_formats:
+  - name: "standard_car"
+    regex: '^[ABEKMHOPCTYX]{1}\d{3}[ABEKMHOPCTYX]{2}\d{2,3}$'
+  - name: "transit"
+    regex: '^[ABEKMHOPCTYX]{2}\d{6}$'
+  - name: "trailer"
+    regex: '^\d{4}[ABEKMHOPCTYX]{2}\d{2,3}$'
+valid_characters:
+  letters: "ABEKMHOPCTYX"
+  digits: "0123456789"
+corrections:
+  digit_to_letter:
+    "0": "O"
+  letter_to_digit:
+    "O": "0"
+  common_mistakes:
+    - from: "D"
+      to: "O"
+    - from: "Q"
+      to: "O"
+stop_words:
+  - "ТЕСТ"
+  - "SAMPLE"
+invalid_sequences:
+  - "0000"
+  - "EEEE"
+  - "XXXX"

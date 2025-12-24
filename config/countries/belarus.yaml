@@ -1,0 +1,27 @@
+name: "Беларусь"
+code: "BY"
+priority: 3
+license_plate_formats:
+  - name: "standard"
+    regex: '^\d{4}[ABEKMHOPCTYX]{2}\d$'
+  - name: "police"
+    regex: '^\d{3}\s?[A-Z]{3}$'
+valid_characters:
+  letters: "ABEKMHOPCTYX"
+  digits: "0123456789"
+corrections:
+  digit_to_letter:
+    "0": "O"
+    "4": "A"
+    "6": "G"
+    "8": "B"
+  letter_to_digit:
+    "O": "0"
+  common_mistakes:
+    - from: "D"
+      to: "O"
+stop_words:
+  - "TEST"
+invalid_sequences:
+  - "0000"
+  - "AAAA"

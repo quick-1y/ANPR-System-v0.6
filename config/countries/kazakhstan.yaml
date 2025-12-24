@@ -1,0 +1,29 @@
+name: "Казахстан"
+code: "KZ"
+priority: 4
+license_plate_formats:
+  - name: "standard"
+    regex: '^\d{3}[ABEKMHOPCTYX]{3}\d{2}$'
+  - name: "regions"
+    regex: '^\d{2}\d{3}[ABEKMHOPCTYX]{2}$'
+valid_characters:
+  letters: "ABEKMHOPCTYX"
+  digits: "0123456789"
+corrections:
+  digit_to_letter:
+    "0": "O"
+    "1": "I"
+    "4": "A"
+    "6": "G"
+    "8": "B"
+  letter_to_digit:
+    "O": "0"
+    "B": "8"
+  common_mistakes:
+    - from: "D"
+      to: "O"
+stop_words:
+  - "TEST"
+invalid_sequences:
+  - "0000"
+  - "BBBB"
