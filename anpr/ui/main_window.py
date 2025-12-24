@@ -1063,6 +1063,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_status_bar()
         self._start_system_monitoring()
         self._refresh_events_table()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._on_app_about_to_quit)
         self._start_channels()
         # Повторно применяем тему после инициализации всех виджетов,
         # чтобы зарегистрированные сеттеры обновили стили при стартовом запуске.
@@ -1882,10 +1885,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.channel_workers.remove(worker)
         worker.deleteLater()
 
-    def _stop_workers(self) -> None:
-        for worker in self.channel_workers:
+    def _stop_workers(self, *, shutdown_executor: bool = False) -> None:
+        for worker in list(self.channel_workers):
+            worker_name = getattr(getattr(worker, "config", None), "name", f"#{getattr(worker, 'channel_id', '?')}")
             worker.stop()
-            worker.wait(2000)
+            finished = worker.wait(5000)
+            if not finished:
+                logger.warning(
+                    "Канал %s не завершился за 5 секунд, выполняем принудительное завершение потока",
+                    worker_name,
+                )
+                worker.terminate()
+                worker.wait(1000)
             try:
                 worker.frame_ready.disconnect()
                 worker.event_ready.disconnect()
@@ -1896,6 +1907,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.channel_workers = []
         self._pending_channel_restarts.clear()
         self._latest_frames.clear()
+        if shutdown_executor:
+            ChannelWorker.shutdown_executor()
+
+    def _on_app_about_to_quit(self) -> None:
+        self._stop_workers(shutdown_executor=True)
 
     def _update_frame(self, channel_name: str, image: QtGui.QImage) -> None:
         cached_preview = image.scaled(
@@ -3595,5 +3611,5 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ------------------ Жизненный цикл ------------------
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
-        self._stop_workers()
+        self._stop_workers(shutdown_executor=True)
         event.accept()
