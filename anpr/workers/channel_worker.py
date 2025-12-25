@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # /anpr/workers/channel_worker.py
+from __future__ import annotations
 import asyncio
 import json
 import os
@@ -291,7 +292,7 @@ def _get_inference_executor() -> ProcessPoolExecutor:
     return _INFERENCE_EXECUTOR
 
 
-def _get_or_create_components(config: dict) -> tuple[ANPRPipeline, YOLODetector]:
+def _get_or_create_components(config: dict) -> tuple["ANPRPipeline", "YOLODetector"]:
     key = _config_fingerprint(config)
     cached = _INFERENCE_COMPONENT_CACHE.get(key)
     if cached:
