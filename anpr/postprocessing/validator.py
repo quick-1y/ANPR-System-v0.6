@@ -92,4 +92,4 @@ class PlatePostProcessor:
                 if format_name:
                     return PlatePostprocessResult(raw_text, normalized, candidate, country.code, True, format_name)
 
-        return PlatePostprocessResult(raw_text, normalized, normalized, None, False, None)
+        return PlatePostprocessResult(raw_text, normalized, "", None, False, None)
