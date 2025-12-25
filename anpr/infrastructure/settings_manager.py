@@ -21,6 +21,44 @@ DEFAULT_ROI_POINTS = [
 logger = get_logger(__name__)
 
 
+def normalize_region_config(region: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Приводит ROI к единому формату с точками.
+
+    Поддерживает старые варианты (x/y/width/height) и гарантирует наличие
+    валидных точек и единицы измерения.
+    """
+
+    if not region:
+        return {"unit": "px", "points": [point.copy() for point in DEFAULT_ROI_POINTS]}
+
+    normalized_unit = str(region.get("unit", "px")).lower()
+    if normalized_unit not in ("px", "percent"):
+        normalized_unit = "px"
+
+    raw_points = region.get("points") or []
+    points: list[dict[str, float]] = []
+    for point in raw_points:
+        if not isinstance(point, dict):
+            continue
+        points.append({"x": float(point.get("x", 0)), "y": float(point.get("y", 0))})
+
+    if points:
+        return {"unit": normalized_unit, "points": points}
+
+    x = float(region.get("x", 0))
+    y = float(region.get("y", 0))
+    width = float(region.get("width", 100))
+    height = float(region.get("height", 100))
+    rect_points = [
+        {"x": x, "y": y},
+        {"x": x + width, "y": y},
+        {"x": x + width, "y": y + height},
+        {"x": x, "y": y + height},
+    ]
+    return {"unit": "percent", "points": rect_points}
+
+
+
 class SettingsManager:
     """Управляет конфигурацией приложения и каналами."""
 
@@ -173,25 +211,7 @@ class SettingsManager:
 
     @staticmethod
     def _upgrade_region(region: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if not region:
-            return {"unit": "px", "points": [point.copy() for point in DEFAULT_ROI_POINTS]}
-
-        if "points" in region:
-            unit = region.get("unit") or "px"
-            points = region.get("points") or [point.copy() for point in DEFAULT_ROI_POINTS]
-            return {"unit": unit, "points": points}
-
-        x = float(region.get("x", 0))
-        y = float(region.get("y", 0))
-        width = float(region.get("width", 100))
-        height = float(region.get("height", 100))
-        points = [
-            {"x": x, "y": y},
-            {"x": x + width, "y": y},
-            {"x": x + width, "y": y + height},
-            {"x": x, "y": y + height},
-        ]
-        return {"unit": "percent", "points": points}
+        return normalize_region_config(region)
 
     @staticmethod
     def _reconnect_defaults() -> Dict[str, Any]:
