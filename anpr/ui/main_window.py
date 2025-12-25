@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # /anpr/ui/main_window.py
+import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from pathlib import Path
 import cv2
 import psutil
 import torch
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -22,6 +23,27 @@ from anpr.infrastructure.logging_manager import get_logger
 from anpr.infrastructure.storage import EventDatabase
 
 logger = get_logger(__name__)
+
+
+class LogSignalEmitter(QtCore.QObject):
+    """Безопасная доставка строк логов в UI-поток."""
+
+    message = QtCore.pyqtSignal(str)
+
+
+class QtLogHandler(logging.Handler):
+    """Qt-хендлер для проброса логов в окно наблюдения."""
+
+    def __init__(self, emitter: LogSignalEmitter) -> None:
+        super().__init__()
+        self._emitter = emitter
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+        except Exception:  # noqa: BLE001
+            return
+        self._emitter.message.emit(msg)
 
 
 class PixmapPool:
@@ -111,6 +133,8 @@ class ChannelView(QtWidgets.QWidget):
 
     def set_channel_name(self, channel_name: Optional[str]) -> None:
         self._channel_name = channel_name
+        if channel_name is None:
+            self.clear()
 
     def channel_name(self) -> Optional[str]:
         return self._channel_name
@@ -222,6 +246,17 @@ class ChannelView(QtWidgets.QWidget):
             self._pixmap_pool.release(self._current_pixmap)
         self._current_pixmap = pixmap
         self.video_label.setPixmap(pixmap)
+
+    def clear(self) -> None:
+        if self._pixmap_pool and self._current_pixmap is not None:
+            self._pixmap_pool.release(self._current_pixmap)
+        self._current_pixmap = None
+        self.video_label.clear()
+        self.video_label.setText("Нет сигнала")
+        self.motion_indicator.hide()
+        self.last_plate.hide()
+        self.status_hint.hide()
+        self.metrics_hint.hide()
 
     def set_motion_active(self, active: bool) -> None:
         self.motion_indicator.setVisible(active)
@@ -1020,10 +1055,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.db = EventDatabase(self.settings.get_db_path())
 
         self._pixmap_pool = PixmapPool()
+        self._log_history: deque[str] = deque(maxlen=500)
+        self._log_emitter = LogSignalEmitter()
+        self._log_emitter.message.connect(self._append_log_message)
+        self._log_handler = QtLogHandler(self._log_emitter)
+        self._log_handler.setLevel(logging.DEBUG)
+        self._log_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        self._log_handler_attached = False
         self.channel_workers: List[ChannelWorker] = []
         self.channel_labels: Dict[str, ChannelView] = {}
         self.focused_channel_name: Optional[str] = None
         self._previous_grid: Optional[str] = None
+        self._debug_settings_cache: Optional[Dict[str, Any]] = None
         self.event_images: "OrderedDict[int, Tuple[Optional[QtGui.QImage], Optional[QtGui.QImage]]]" = OrderedDict()
         self._image_cache_bytes = 0
         self.event_cache: Dict[int, Dict] = {}
@@ -1293,6 +1338,44 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cpu_label.setText(f"CPU: {cpu_percent:.0f}%")
         self.ram_label.setText(f"RAM: {ram_percent:.0f}%")
 
+    def _enable_log_streaming(self) -> None:
+        if self._log_handler_attached:
+            return
+        logging.getLogger().addHandler(self._log_handler)
+        self._log_handler_attached = True
+
+    def _disable_log_streaming(self) -> None:
+        if not self._log_handler_attached:
+            return
+        try:
+            logging.getLogger().removeHandler(self._log_handler)
+        except ValueError:
+            pass
+        self._log_handler_attached = False
+
+    def _set_log_panel_visible(self, visible: bool) -> None:
+        if hasattr(self, "log_group"):
+            self.log_group.setVisible(visible)
+        if visible:
+            self._enable_log_streaming()
+            self._refresh_log_view()
+        else:
+            self._disable_log_streaming()
+
+    def _append_log_message(self, message: str) -> None:
+        self._log_history.append(message)
+        if getattr(self, "log_group", None) and self.log_group.isVisible():
+            self.log_view.append(message)
+            self.log_view.moveCursor(QtGui.QTextCursor.End)
+
+    def _refresh_log_view(self) -> None:
+        if not getattr(self, "log_view", None):
+            return
+        self.log_view.clear()
+        for line in self._log_history:
+            self.log_view.append(line)
+        self.log_view.moveCursor(QtGui.QTextCursor.End)
+
     # ------------------ Наблюдение ------------------
     def _build_observation_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
@@ -1340,6 +1423,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grid_layout.setSpacing(6)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         left_column.addWidget(self.grid_widget, stretch=4)
+
+        self.log_group = QtWidgets.QGroupBox("Логи (Debug)")
+        self._apply_stylesheet(self.log_group, lambda: self.group_box_style)
+        log_layout = QtWidgets.QVBoxLayout(self.log_group)
+        log_layout.setContentsMargins(8, 8, 8, 8)
+        log_layout.setSpacing(6)
+        self.log_view = QtWidgets.QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(160)
+        self.log_view.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self._apply_stylesheet(
+            self.log_view,
+            lambda: (
+                f"QTextEdit {{ background-color: {self.colors['field_bg']}; color: {self.colors['text_primary']}; border: 1px solid {self.colors['border']}; border-radius: 8px; }}"
+            ),
+        )
+        log_layout.addWidget(self.log_view)
+        self.log_group.setVisible(False)
+        left_column.addWidget(self.log_group, stretch=1)
 
         right_column = QtWidgets.QVBoxLayout()
         right_column.setContentsMargins(0, 0, 0, 0)
@@ -1442,6 +1544,63 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._draw_grid()
         return widget
+
+    def _build_debug_settings_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._apply_stylesheet(
+            scroll,
+            lambda: (
+                f"QScrollArea {{ background: transparent; border: none; }}"
+                f"QScrollArea > QWidget > QWidget {{ background-color: {self.colors['surface']}; }}"
+            ),
+        )
+
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+        self._apply_stylesheet(widget, lambda: self.form_style)
+
+        debug_group = QtWidgets.QGroupBox("Глобальный Debug")
+        self._apply_stylesheet(debug_group, lambda: self.group_box_style)
+        debug_form = QtWidgets.QFormLayout(debug_group)
+        self._tune_form_layout(debug_form)
+
+        overlay_row = QtWidgets.QHBoxLayout()
+        overlay_row.setSpacing(10)
+        self.debug_detection_global_checkbox = QtWidgets.QCheckBox("Рамки детекции")
+        self.debug_ocr_global_checkbox = QtWidgets.QCheckBox("Символы OCR")
+        self.debug_direction_global_checkbox = QtWidgets.QCheckBox("Трек движения")
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+        ):
+            overlay_row.addWidget(checkbox)
+        overlay_row.addStretch(1)
+        debug_form.addRow("Оверлеи:", overlay_row)
+
+        self.debug_log_checkbox = QtWidgets.QCheckBox("Лог")
+        self.debug_log_checkbox.setToolTip("Показывать поток логов под сеткой наблюдения во вкладке «Наблюдение»")
+        debug_form.addRow("Логирование:", self.debug_log_checkbox)
+
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+            self.debug_log_checkbox,
+        ):
+            checkbox.stateChanged.connect(self._on_debug_settings_changed)
+
+        layout.addWidget(debug_group)
+        layout.addStretch(1)
+        scroll.setWidget(widget)
+
+        self._load_debug_settings()
+        return scroll
 
     def _polish_button(self, button: QtWidgets.QPushButton, min_width: int = 140) -> None:
         def apply_style() -> None:
@@ -1642,8 +1801,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     channel_name = channels[index].get("name", f"Канал {index+1}")
                     self.channel_labels[channel_name] = label
                 label.set_channel_name(channel_name)
-                if index < len(channels) and not channels[index].get("enabled", True):
-                    label.set_status("Отключен")
                 label.channelDropped.connect(self._on_channel_dropped)
                 label.channelActivated.connect(self._on_channel_activated)
                 label.dragStarted.connect(self._on_drag_started)
@@ -1777,11 +1934,6 @@ class MainWindow(QtWidgets.QMainWindow):
         reconnect_conf = self.settings.get_reconnect()
         plate_settings = self.settings.get_plate_settings()
         for channel_conf in self.settings.get_channels():
-            if not channel_conf.get("enabled", True):
-                label = self.channel_labels.get(channel_conf.get("name", ""))
-                if label:
-                    label.set_status("Отключен")
-                continue
             self._start_channel_worker(channel_conf, reconnect_conf, plate_settings)
 
     def _start_channel_worker(
@@ -1790,11 +1942,6 @@ class MainWindow(QtWidgets.QMainWindow):
         reconnect_conf: Optional[Dict[str, Any]] = None,
         plate_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if not channel_conf.get("enabled", True):
-            label = self.channel_labels.get(channel_conf.get("name", "Канал"))
-            if label:
-                label.set_status("Отключен")
-            return
         source = str(channel_conf.get("source", "")).strip()
         channel_name = channel_conf.get("name", "Канал")
         if not source:
@@ -1804,7 +1951,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         reconnect_conf = reconnect_conf or self.settings.get_reconnect()
         plate_settings = plate_settings or self.settings.get_plate_settings()
-        worker = self._create_channel_worker(channel_conf, reconnect_conf, plate_settings)
+        debug_settings = self.settings.get_debug_settings()
+        worker = self._create_channel_worker(channel_conf, reconnect_conf, plate_settings, debug_settings)
         self.channel_workers.append(worker)
         worker.start()
 
@@ -1813,6 +1961,7 @@ class MainWindow(QtWidgets.QMainWindow):
         channel_conf: Dict[str, Any],
         reconnect_conf: Dict[str, Any],
         plate_settings: Dict[str, Any],
+        debug_settings: Dict[str, Any],
     ) -> ChannelWorker:
         worker = ChannelWorker(
             channel_conf,
@@ -1820,6 +1969,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings.get_screenshot_dir(),
             reconnect_conf,
             plate_settings,
+            debug_settings,
         )
         worker.frame_ready.connect(self._update_frame)
         worker.event_ready.connect(self._handle_event)
@@ -1911,6 +2061,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ChannelWorker.shutdown_executor()
 
     def _on_app_about_to_quit(self) -> None:
+        self._disable_log_streaming()
         self._stop_workers(shutdown_executor=True)
 
     def _update_frame(self, channel_name: str, image: QtGui.QImage) -> None:
@@ -2440,11 +2591,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_stylesheet(self.settings_nav, lambda: self.list_style)
         self.settings_nav.addItem("Общие")
         self.settings_nav.addItem("Каналы")
+        self.settings_nav.addItem("Debug")
         content_layout.addWidget(self.settings_nav)
 
         self.settings_stack = QtWidgets.QStackedWidget()
         self.settings_stack.addWidget(self._build_general_settings_tab())
         self.settings_stack.addWidget(self._build_channel_settings_tab())
+        self.settings_stack.addWidget(self._build_debug_settings_tab())
         content_layout.addWidget(self.settings_stack, 1)
 
         layout.addWidget(content, 1)
@@ -2697,14 +2850,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.remove_channel_btn.clicked.connect(self._remove_channel)
         toolbar.addWidget(self.remove_channel_btn)
 
-        self.toggle_channel_btn = QtWidgets.QToolButton()
-        self.toggle_channel_btn.setCheckable(True)
-        self.toggle_channel_btn.setText("●")
-        self.toggle_channel_btn.setToolTip("Деактивировать канал")
-        self.toggle_channel_btn.setFixedSize(28, 28)
-        self._style_channel_tool_button(self.toggle_channel_btn)
-        self.toggle_channel_btn.clicked.connect(self._toggle_channel_active)
-        toolbar.addWidget(self.toggle_channel_btn)
         toolbar.addStretch(1)
         left_panel.addLayout(toolbar)
 
@@ -2761,25 +2906,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._configure_line_edit(self.channel_source_input, self.FIELD_MAX_WIDTH)
         channel_form.addRow("Название:", self.channel_name_input)
         channel_form.addRow("Источник/RTSP:", self.channel_source_input)
-
-        debug_row = QtWidgets.QHBoxLayout()
-        self.debug_detection_checkbox = QtWidgets.QCheckBox("Рамки детекции")
-        self.debug_detection_checkbox.setToolTip(
-            "Отображать рамки поиска номеров на кадре"
-        )
-        self.debug_ocr_checkbox = QtWidgets.QCheckBox("Символы OCR")
-        self.debug_ocr_checkbox.setToolTip(
-            "Выводить распознанные символы поверх рамок"
-        )
-        self.debug_direction_checkbox = QtWidgets.QCheckBox("Трек движения")
-        self.debug_direction_checkbox.setToolTip(
-            "Показывать траектории движения и направление каждого трека"
-        )
-        debug_row.addWidget(self.debug_detection_checkbox)
-        debug_row.addWidget(self.debug_ocr_checkbox)
-        debug_row.addWidget(self.debug_direction_checkbox)
-        debug_row.addStretch(1)
-        channel_form.addRow("Отладка:", debug_row)
 
         recognition_form = make_form_tab()
         tabs.setTabText(1, "Распознавание")
@@ -3017,8 +3143,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return widget
 
     def _channel_item_label(self, channel: Dict[str, Any]) -> str:
-        prefix = "●" if channel.get("enabled", True) else "○"
-        return f"{prefix} {channel.get('name', 'Канал')}"
+        return channel.get("name", "Канал")
 
     def _on_channel_selected(self, index: int) -> None:
         self._load_channel_form(index)
@@ -3051,24 +3176,7 @@ class MainWindow(QtWidgets.QMainWindow):
         index = self.channels_list.currentRow()
         channels = self.settings.get_channels()
         has_selection = 0 <= index < len(channels)
-        for btn in (self.remove_channel_btn, self.toggle_channel_btn):
-            btn.setEnabled(has_selection)
-        if has_selection:
-            channel = channels[index]
-            enabled = bool(channel.get("enabled", True))
-            self.toggle_channel_btn.blockSignals(True)
-            self.toggle_channel_btn.setChecked(enabled)
-            self.toggle_channel_btn.blockSignals(False)
-            self.toggle_channel_btn.setText("●" if enabled else "○")
-            self.toggle_channel_btn.setToolTip(
-                "Деактивировать канал" if enabled else "Активировать канал"
-            )
-        else:
-            self.toggle_channel_btn.blockSignals(True)
-            self.toggle_channel_btn.setChecked(False)
-            self.toggle_channel_btn.blockSignals(False)
-            self.toggle_channel_btn.setText("●")
-            self.toggle_channel_btn.setToolTip("Активировать канал")
+        self.remove_channel_btn.setEnabled(has_selection)
 
     def _clear_channel_form(self) -> None:
         self.channel_name_input.clear()
@@ -3084,9 +3192,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.motion_stride_input.setValue(1)
         self.motion_activation_frames_input.setValue(3)
         self.motion_release_frames_input.setValue(6)
-        self.debug_detection_checkbox.setChecked(False)
-        self.debug_ocr_checkbox.setChecked(False)
-        self.debug_direction_checkbox.setChecked(False)
         self.roi_enabled_checkbox.blockSignals(True)
         self.roi_enabled_checkbox.setChecked(True)
         self.roi_enabled_checkbox.blockSignals(False)
@@ -3170,6 +3275,12 @@ class MainWindow(QtWidgets.QMainWindow):
         offset_minutes = int(time_settings.get("offset_minutes", 0) or 0)
         adjusted_dt = QtCore.QDateTime.currentDateTime().addSecs(offset_minutes * 60)
         self.time_correction_input.setDateTime(adjusted_dt)
+
+    def _load_debug_settings(self) -> None:
+        debug_settings = self.settings.get_debug_settings()
+        self._debug_settings_cache = debug_settings
+        self._apply_debug_settings_to_ui()
+        self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
 
     def _sync_time_now(self) -> None:
         self.time_correction_input.setDateTime(QtCore.QDateTime.currentDateTime())
@@ -3332,11 +3443,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_plate_rects_from_inputs()
             self._on_size_filter_toggled(size_filter_enabled)
 
-            debug_conf = channel.get("debug", {})
-            self.debug_detection_checkbox.setChecked(bool(debug_conf.get("show_detection_boxes", False)))
-            self.debug_ocr_checkbox.setChecked(bool(debug_conf.get("show_ocr_text", False)))
-            self.debug_direction_checkbox.setChecked(bool(debug_conf.get("show_direction_tracks", False)))
-
             region = channel.get("region") or self._default_roi_region()
             if not region.get("points"):
                 region = {"unit": region.get("unit", "px"), "points": self._default_roi_region()["points"]}
@@ -3357,7 +3463,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 "id": new_id,
                 "name": f"Канал {new_id}",
                 "source": "",
-                "enabled": True,
                 "best_shots": self.settings.get_best_shots(),
                 "cooldown_seconds": self.settings.get_cooldown_seconds(),
                 "ocr_min_confidence": self.settings.get_min_confidence(),
@@ -3372,41 +3477,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 "min_plate_size": self.settings.get_plate_size_defaults().get("min_plate_size"),
                 "max_plate_size": self.settings.get_plate_size_defaults().get("max_plate_size"),
                 "size_filter_enabled": True,
-                "debug": {
-                    "show_detection_boxes": False,
-                    "show_ocr_text": False,
-                    "show_direction_tracks": False,
-                },
             }
         )
         self.settings.save_channels(channels)
         self._reload_channels_list(len(channels) - 1)
         self._draw_grid()
         self._start_channels()
-
-    def _toggle_channel_active(self) -> None:
-        index = self.channels_list.currentRow()
-        channels = self.settings.get_channels()
-        if 0 <= index < len(channels):
-            channel_conf = channels[index]
-            new_state = not bool(channel_conf.get("enabled", True))
-            channel_conf["enabled"] = new_state
-            self.settings.save_channels(channels)
-            channel_name = channel_conf.get("name", "Канал")
-            if new_state:
-                label = self.channel_labels.get(channel_name)
-                if label:
-                    label.set_status("")
-                self._start_channel_worker(channel_conf)
-            else:
-                worker = self._find_channel_worker(int(channel_conf.get("id", 0)))
-                if worker:
-                    self._stop_channel_worker(worker)
-                label = self.channel_labels.get(channel_name)
-                if label:
-                    label.set_status("Отключен")
-            self._update_channels_list_names(channels)
-            self._update_channel_action_states()
 
     def _remove_channel(self) -> None:
         index = self.channels_list.currentRow()
@@ -3425,6 +3501,7 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 channel_id = channels[index].get("id")
                 previous_name = channels[index].get("name", "Канал")
+                previous_source = str(channels[index].get("source", "")).strip()
                 logger.info("Сохранение настроек канала: id=%s", channel_id)
                 channels[index]["name"] = self.channel_name_input.text()
                 channels[index]["source"] = self.channel_source_input.text()
@@ -3447,12 +3524,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     "height": int(self.max_plate_height_input.value()),
                 }
                 channels[index]["size_filter_enabled"] = self.size_filter_checkbox.isChecked()
-                channels[index]["region"] = {"unit": "px", "points": self._collect_roi_points_from_table()}
-                channels[index]["debug"] = {
-                    "show_detection_boxes": self.debug_detection_checkbox.isChecked(),
-                    "show_ocr_text": self.debug_ocr_checkbox.isChecked(),
-                    "show_direction_tracks": self.debug_direction_checkbox.isChecked(),
-                }
+                channels[index]["region"] = self._build_region_payload()
+                channels[index].pop("debug", None)
+
+                debug_settings = self._save_debug_settings()
+
                 self.settings.save_channels(channels)
                 logger.info(
                     "Настройки канала сохранены: id=%s name=%s",
@@ -3469,11 +3545,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     else:
                         if previous_name != channels[index].get("name"):
                             self._latest_frames.pop(previous_name, None)
-                        existing.update_runtime_config(
-                            channels[index],
-                            self.settings.get_reconnect(),
-                            self.settings.get_plate_settings(),
-                        )
+                        if new_source != previous_source:
+                            self._restart_channel_worker(channels[index])
+                        else:
+                            existing.update_runtime_config(
+                                channels[index],
+                                self.settings.get_reconnect(),
+                                self.settings.get_plate_settings(),
+                                debug_settings,
+                            )
                 elif new_source:
                     self._start_channel_worker(channels[index])
             except Exception as exc:  # noqa: BLE001
@@ -3484,25 +3564,85 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"Не удалось сохранить настройки канала: {exc}",
                 )
 
+    def _on_debug_settings_changed(self) -> None:
+        self._save_debug_settings()
+
+    def _save_debug_settings(self) -> Dict[str, Any]:
+        debug_settings = {
+            "show_detection_boxes": self.debug_detection_global_checkbox.isChecked(),
+            "show_ocr_text": self.debug_ocr_global_checkbox.isChecked(),
+            "show_direction_tracks": self.debug_direction_global_checkbox.isChecked(),
+            "log_panel_enabled": self.debug_log_checkbox.isChecked(),
+        }
+        self._debug_settings_cache = debug_settings
+        self.settings.save_debug_settings(debug_settings)
+        self._apply_debug_settings_to_workers(debug_settings)
+        self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
+        return debug_settings
+
+    def _apply_debug_settings_to_workers(self, debug_settings: Dict[str, Any]) -> None:
+        reconnect_conf = self.settings.get_reconnect()
+        plate_settings = self.settings.get_plate_settings()
+        channels = {int(channel.get("id", 0)): channel for channel in self.settings.get_channels()}
+        for worker in list(self.channel_workers):
+            channel_conf = channels.get(worker.channel_id)
+            if channel_conf is None:
+                continue
+            worker.update_runtime_config(
+                channel_conf,
+                reconnect_conf,
+                plate_settings,
+                debug_settings,
+            )
+
+    def _apply_debug_settings_to_ui(self) -> None:
+        if not self._debug_settings_cache:
+            return
+        if not hasattr(self, "debug_detection_global_checkbox"):
+            return
+        mapping = (
+            (self.debug_detection_global_checkbox, "show_detection_boxes"),
+            (self.debug_ocr_global_checkbox, "show_ocr_text"),
+            (self.debug_direction_global_checkbox, "show_direction_tracks"),
+            (self.debug_log_checkbox, "log_panel_enabled"),
+        )
+        for checkbox, key in mapping:
+            if checkbox is None:
+                continue
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(self._debug_settings_cache.get(key, False)))
+            checkbox.blockSignals(False)
+
     def _sync_roi_table(self, roi: Dict[str, Any]) -> None:
         points = roi.get("points") or []
+        unit = str(roi.get("unit", "px")).lower()
+        if unit == "percent":
+            img_size = self.preview.image_size()
+            if img_size:
+                points = [
+                    {
+                        "x": float(point.get("x", 0.0)) * img_size.width() / 100.0,
+                        "y": float(point.get("y", 0.0)) * img_size.height() / 100.0,
+                    }
+                    for point in points
+                ]
         self.roi_points_table.blockSignals(True)
         self.roi_points_table.setRowCount(len(points))
         for row, point in enumerate(points):
-            x_item = QtWidgets.QTableWidgetItem(str(int(point.get("x", 0))))
-            y_item = QtWidgets.QTableWidgetItem(str(int(point.get("y", 0))))
+            x_item = QtWidgets.QTableWidgetItem(f"{float(point.get('x', 0.0)):.2f}")
+            y_item = QtWidgets.QTableWidgetItem(f"{float(point.get('y', 0.0)):.2f}")
             self.roi_points_table.setItem(row, 0, x_item)
             self.roi_points_table.setItem(row, 1, y_item)
         self.roi_points_table.blockSignals(False)
 
-    def _collect_roi_points_from_table(self) -> List[Dict[str, int]]:
-        points: List[Dict[str, int]] = []
+    def _collect_roi_points_from_table(self) -> List[Dict[str, float]]:
+        points: List[Dict[str, float]] = []
         for row in range(self.roi_points_table.rowCount()):
             x_item = self.roi_points_table.item(row, 0)
             y_item = self.roi_points_table.item(row, 1)
             try:
-                x_val = int(x_item.text()) if x_item else 0
-                y_val = int(y_item.text()) if y_item else 0
+                x_val = float(x_item.text()) if x_item else 0.0
+                y_val = float(y_item.text()) if y_item else 0.0
             except ValueError:
                 continue
             points.append({"x": x_val, "y": y_val})
@@ -3514,6 +3654,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_roi_table_changed(self) -> None:
         roi = {"unit": "px", "points": self._collect_roi_points_from_table()}
         self.preview.set_roi(roi)
+
+    def _build_region_payload(self) -> Dict[str, Any]:
+        points = self._collect_roi_points_from_table()
+        image_size = self.preview.image_size()
+        if image_size and image_size.width() > 0 and image_size.height() > 0:
+            width = float(image_size.width())
+            height = float(image_size.height())
+            normalized = [
+                {
+                    "x": round(max(0.0, min(100.0, (point.get("x", 0.0) / width) * 100.0)), 2),
+                    "y": round(max(0.0, min(100.0, (point.get("y", 0.0) / height) * 100.0)), 2),
+                }
+                for point in points
+            ]
+            return {"unit": "percent", "points": normalized}
+        return {"unit": "px", "points": [{"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0))} for p in points]}
 
     def _add_roi_point(self) -> None:
         img_size = self.preview.image_size()
