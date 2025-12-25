@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 from anpr.infrastructure.logging_manager import get_logger
@@ -52,6 +53,30 @@ class YOLODetector:
 
         if predictor and hasattr(predictor, "vid_path"):
             predictor.vid_path = [None] * len(trackers)
+
+    @staticmethod
+    def _is_cuda_op_missing(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "torchvision::nms" in message or ("notimplementederror" in message and "cuda" in message)
+
+    def _fallback_to_cpu(self, reason: str) -> None:
+        if self.device.type == "cpu":
+            return
+
+        logger.warning("Переключаем YOLO на CPU: %s", reason)
+        self.model.to("cpu")
+        self.device = torch.device("cpu")
+        self._reset_tracker_state()
+        self._tracking_supported = False
+
+    def _maybe_handle_cuda_op_error(self, exc: Exception, context: str) -> bool:
+        if self.device.type == "cpu":
+            return False
+
+        if self._is_cuda_op_missing(exc):
+            self._fallback_to_cpu(f"{context}: {exc}")
+            return True
+        return False
 
     def _maybe_reset_tracker(self, frame_shape: tuple[int, ...]) -> None:
         if self._last_frame_shape and self._last_frame_shape != frame_shape:
@@ -101,25 +126,43 @@ class YOLODetector:
             return []
 
         self._maybe_reset_tracker(frame.shape)
-        detections = self.model.predict(frame, verbose=False, device=self.device)
+        try:
+            detections = self.model.predict(frame, verbose=False, device=self.device)
+        except Exception as exc:  # noqa: BLE001 - хотим логировать любые сбои инференса
+            if self._maybe_handle_cuda_op_error(exc, "Ошибка CUDA/NMS при detect"):
+                return self.detect(frame)
+            logger.exception("Ошибка детекции YOLO")
+            return []
+
         results: List[Dict[str, Any]] = []
-        for det in detections[0].boxes.data:
-            x1, y1, x2, y2, conf, _ = det.cpu().numpy()
+        boxes = detections[0].boxes
+        if boxes is None or boxes.data is None:
+            return results
+
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy() if boxes.conf is not None else [1.0] * len(xyxy)
+
+        for coords, conf in zip(xyxy, confs):
+            if len(coords) < 4:
+                continue
             if conf >= self._confidence_threshold:
-                results.append({"bbox": [int(x1), int(y1), int(x2), int(y2)], "confidence": float(conf)})
+                results.append(
+                    {"bbox": [int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])], "confidence": float(conf)}
+                )
         return self._filter_by_size(results)
 
     def _track_internal(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         detections = self.model.track(frame, persist=True, verbose=False, device=self.device)
         results: List[Dict[str, Any]] = []
-        if detections[0].boxes.id is None:
+        boxes = detections[0].boxes
+        if boxes is None or boxes.id is None:
             return results
 
-        track_ids = detections[0].boxes.id.int().cpu().tolist()
-        boxes = detections[0].boxes.xyxy.cpu().numpy()
-        confs = detections[0].boxes.conf.cpu().numpy()
+        track_ids = boxes.id.int().cpu().tolist()
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy() if boxes.conf is not None else [1.0] * len(track_ids)
 
-        for box, track_id, conf in zip(boxes, track_ids, confs):
+        for box, track_id, conf in zip(xyxy, track_ids, confs):
             if conf >= self._confidence_threshold:
                 results.append(
                     {
@@ -144,7 +187,9 @@ class YOLODetector:
             self._tracking_supported = False
             logger.warning("Отключаем трекинг YOLO: отсутствуют зависимости")
             return self.detect(frame)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - хотим логировать любые сбои инференса
+            if self._maybe_handle_cuda_op_error(exc, "Ошибка CUDA/NMS при track"):
+                return self.detect(frame)
             self._tracking_supported = False
             self._reset_tracker_state()
             logger.exception("Отключаем трекинг YOLO из-за ошибки, переключаемся на detect")
