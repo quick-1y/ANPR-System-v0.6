@@ -1068,6 +1068,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.channel_labels: Dict[str, ChannelView] = {}
         self.focused_channel_name: Optional[str] = None
         self._previous_grid: Optional[str] = None
+        self._debug_settings_cache: Optional[Dict[str, Any]] = None
         self.event_images: "OrderedDict[int, Tuple[Optional[QtGui.QImage], Optional[QtGui.QImage]]]" = OrderedDict()
         self._image_cache_bytes = 0
         self.event_cache: Dict[int, Dict] = {}
@@ -3083,6 +3084,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.debug_log_checkbox,
         ):
             checkbox.stateChanged.connect(self._on_debug_settings_changed)
+        self._apply_debug_settings_to_ui()
 
         right_panel.addWidget(tabs)
 
@@ -3244,16 +3246,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _load_debug_settings(self) -> None:
         debug_settings = self.settings.get_debug_settings()
-        mapping = (
-            (self.debug_detection_global_checkbox, "show_detection_boxes"),
-            (self.debug_ocr_global_checkbox, "show_ocr_text"),
-            (self.debug_direction_global_checkbox, "show_direction_tracks"),
-            (self.debug_log_checkbox, "log_panel_enabled"),
-        )
-        for checkbox, key in mapping:
-            checkbox.blockSignals(True)
-            checkbox.setChecked(bool(debug_settings.get(key, False)))
-            checkbox.blockSignals(False)
+        self._debug_settings_cache = debug_settings
+        self._apply_debug_settings_to_ui()
         self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
 
     def _sync_time_now(self) -> None:
@@ -3547,6 +3541,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "show_direction_tracks": self.debug_direction_global_checkbox.isChecked(),
             "log_panel_enabled": self.debug_log_checkbox.isChecked(),
         }
+        self._debug_settings_cache = debug_settings
         self.settings.save_debug_settings(debug_settings)
         self._apply_debug_settings_to_workers(debug_settings)
         self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
@@ -3566,6 +3561,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 plate_settings,
                 debug_settings,
             )
+
+    def _apply_debug_settings_to_ui(self) -> None:
+        if not self._debug_settings_cache:
+            return
+        if not hasattr(self, "debug_detection_global_checkbox"):
+            return
+        mapping = (
+            (self.debug_detection_global_checkbox, "show_detection_boxes"),
+            (self.debug_ocr_global_checkbox, "show_ocr_text"),
+            (self.debug_direction_global_checkbox, "show_direction_tracks"),
+            (self.debug_log_checkbox, "log_panel_enabled"),
+        )
+        for checkbox, key in mapping:
+            if checkbox is None:
+                continue
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(self._debug_settings_cache.get(key, False)))
+            checkbox.blockSignals(False)
 
     def _sync_roi_table(self, roi: Dict[str, Any]) -> None:
         points = roi.get("points") or []
