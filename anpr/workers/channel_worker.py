@@ -29,6 +29,7 @@ from anpr.infrastructure.settings_manager import (
     direction_defaults,
     normalize_region_config,
     plate_size_defaults,
+    segmentation_defaults,
 )
 from anpr.infrastructure.storage import AsyncEventDatabase
 from anpr.workers.motion_controller import MotionController
@@ -187,6 +188,61 @@ class DirectionSettings:
 
 
 @dataclass
+class SegmentationSettings:
+    """Параметры сегментации символов перед OCR."""
+
+    enabled: bool = False
+    min_symbol_area_ratio: float = 0.0
+    max_symbol_area_ratio: float = 0.0
+    min_symbol_aspect_ratio: float = 0.0
+    max_symbol_aspect_ratio: float = 0.0
+    padding_px: int = 0
+    max_components: int = 0
+    row_merge_threshold: float = 0.55
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]], defaults: Optional[Dict[str, Any]] = None) -> "SegmentationSettings":
+        resolved_defaults = defaults or segmentation_defaults()
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", resolved_defaults.get("enabled", False))),
+            min_symbol_area_ratio=float(
+                data.get("min_symbol_area_ratio", resolved_defaults.get("min_symbol_area_ratio", 0.0025))
+            ),
+            max_symbol_area_ratio=float(
+                data.get("max_symbol_area_ratio", resolved_defaults.get("max_symbol_area_ratio", 0.18))
+            ),
+            min_symbol_aspect_ratio=float(
+                data.get("min_symbol_aspect_ratio", resolved_defaults.get("min_symbol_aspect_ratio", 0.18))
+            ),
+            max_symbol_aspect_ratio=float(
+                data.get("max_symbol_aspect_ratio", resolved_defaults.get("max_symbol_aspect_ratio", 1.35))
+            ),
+            padding_px=int(data.get("padding_px", resolved_defaults.get("padding_px", 2))),
+            max_components=int(data.get("max_components", resolved_defaults.get("max_components", 18))),
+            row_merge_threshold=float(
+                data.get("row_merge_threshold", resolved_defaults.get("row_merge_threshold", 0.55))
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, float | int | bool]:
+        min_area = float(max(0.0, self.min_symbol_area_ratio))
+        max_area = float(max(min_area, self.max_symbol_area_ratio))
+        min_aspect = float(max(0.0, self.min_symbol_aspect_ratio))
+        max_aspect = float(max(min_aspect, self.max_symbol_aspect_ratio))
+        return {
+            "enabled": bool(self.enabled),
+            "min_symbol_area_ratio": min_area,
+            "max_symbol_area_ratio": max_area,
+            "min_symbol_aspect_ratio": min_aspect,
+            "max_symbol_aspect_ratio": max_aspect,
+            "padding_px": int(max(0, self.padding_px)),
+            "max_components": int(max(1, self.max_components)),
+            "row_merge_threshold": float(max(0.0, self.row_merge_threshold)),
+        }
+
+
+@dataclass
 class ReconnectPolicy:
     """Политика переподключения канала."""
 
@@ -232,12 +288,14 @@ class ChannelRuntimeConfig:
     min_plate_size: PlateSize
     max_plate_size: PlateSize
     direction: DirectionSettings
+    segmentation: SegmentationSettings
 
     @classmethod
     def from_dict(cls, channel_conf: Dict[str, Any], debug_settings: Optional[Dict[str, Any]] = None) -> "ChannelRuntimeConfig":
         settings = SettingsManager()
         size_defaults = settings.get_plate_size_defaults()
         direction_defaults = settings.get_direction_defaults()
+        segmentation_defaults = settings.get_ocr_settings().get("segmentation", SettingsManager._segmentation_defaults())
         resolved_debug = debug_settings if debug_settings is not None else settings.get_debug_settings()
         return cls(
             name=channel_conf.get("name", "Канал"),
@@ -266,6 +324,7 @@ class ChannelRuntimeConfig:
                 default_label="max_plate_size",
             ),
             direction=DirectionSettings.from_dict(channel_conf.get("direction"), direction_defaults),
+            segmentation=SegmentationSettings.from_dict(channel_conf.get("ocr_segmentation"), segmentation_defaults),
         )
 
 
@@ -308,6 +367,7 @@ def _get_or_create_components(config: dict) -> tuple["ANPRPipeline", "YOLODetect
         config.get("min_plate_size"),
         config.get("max_plate_size"),
         config.get("size_filter_enabled", True),
+        config.get("segmentation"),
     )
     _INFERENCE_COMPONENT_CACHE[key] = (pipeline, detector)
     return pipeline, detector
@@ -551,6 +611,7 @@ class ChannelWorker(QtCore.QThread):
             "max_plate_size": config.max_plate_size.to_dict(),
             "direction": config.direction.to_dict(),
             "size_filter_enabled": config.size_filter_enabled,
+            "segmentation": config.segmentation.to_dict(),
         }
 
     def _extract_region(self, frame: cv2.Mat) -> Tuple[cv2.Mat, Tuple[int, int, int, int]]:

@@ -126,6 +126,7 @@ class SettingsManager:
 
         changed = False
         tracking_defaults = data.get("tracking", {})
+        ocr_defaults = self._ocr_defaults()
         reconnect_defaults = self._reconnect_defaults()
         storage_defaults = self._storage_defaults()
         plate_defaults = self._plate_defaults()
@@ -153,7 +154,7 @@ class SettingsManager:
                     changed = True
 
         for channel in data.get("channels", []):
-            if self._fill_channel_defaults(channel, tracking_defaults):
+            if self._fill_channel_defaults(channel, tracking_defaults, ocr_defaults):
                 changed = True
 
         if self._fill_reconnect_defaults(data, reconnect_defaults):
@@ -188,8 +189,13 @@ class SettingsManager:
         return data
 
     @staticmethod
-    def _channel_defaults(tracking_defaults: Dict[str, Any]) -> Dict[str, Any]:
+    def _channel_defaults(
+        tracking_defaults: Dict[str, Any], ocr_defaults: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         size_defaults = plate_size_defaults()
+        segmentation_defaults = copy.deepcopy(
+            (ocr_defaults or {}).get("segmentation", SettingsManager._segmentation_defaults())
+        )
         return {
             "best_shots": int(tracking_defaults.get("best_shots", 3)),
             "cooldown_seconds": int(tracking_defaults.get("cooldown_seconds", 5)),
@@ -206,6 +212,7 @@ class SettingsManager:
             "size_filter_enabled": True,
             "min_plate_size": size_defaults["min_plate_size"].copy(),
             "max_plate_size": size_defaults["max_plate_size"].copy(),
+            "ocr_segmentation": copy.deepcopy(segmentation_defaults),
         }
 
     @staticmethod
@@ -288,6 +295,20 @@ class SettingsManager:
             "img_width": 128,
             "alphabet": "0123456789ABCEHKMOPTXY",
             "confidence_threshold": 0.6,
+            "segmentation": SettingsManager._segmentation_defaults(),
+        }
+
+    @staticmethod
+    def _segmentation_defaults() -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "min_symbol_area_ratio": 0.0025,
+            "max_symbol_area_ratio": 0.18,
+            "min_symbol_aspect_ratio": 0.18,
+            "max_symbol_aspect_ratio": 1.35,
+            "padding_px": 2,
+            "max_components": 18,
+            "row_merge_threshold": 0.55,
         }
 
     @staticmethod
@@ -306,8 +327,10 @@ class SettingsManager:
         default_zone = f"UTC{sign}{hours:02d}:{mins:02d}"
         return {"timezone": default_zone, "offset_minutes": 0}
 
-    def _fill_channel_defaults(self, channel: Dict[str, Any], tracking_defaults: Dict[str, Any]) -> bool:
-        defaults = self._channel_defaults(tracking_defaults)
+    def _fill_channel_defaults(
+        self, channel: Dict[str, Any], tracking_defaults: Dict[str, Any], ocr_defaults: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        defaults = self._channel_defaults(tracking_defaults, ocr_defaults)
         changed = False
         for key, value in defaults.items():
             if key not in channel:
@@ -327,6 +350,17 @@ class SettingsManager:
             for key, value in direction_defaults.items():
                 if key not in channel_direction:
                     channel_direction[key] = value
+                    changed = True
+
+        segmentation_defaults = defaults.get("ocr_segmentation", self._segmentation_defaults())
+        channel_segmentation = channel.get("ocr_segmentation")
+        if channel_segmentation is None:
+            channel["ocr_segmentation"] = copy.deepcopy(segmentation_defaults)
+            changed = True
+        elif isinstance(channel_segmentation, dict):
+            for key, value in segmentation_defaults.items():
+                if key not in channel_segmentation:
+                    channel_segmentation[key] = value
                     changed = True
 
         upgraded_region = self._upgrade_region(channel.get("region"))
@@ -429,6 +463,17 @@ class SettingsManager:
             if key not in ocr:
                 ocr[key] = val
                 changed = True
+        segmentation_defaults = defaults.get("segmentation", {})
+        if isinstance(segmentation_defaults, dict):
+            segmentation_settings = ocr.get("segmentation")
+            if segmentation_settings is None:
+                ocr["segmentation"] = copy.deepcopy(segmentation_defaults)
+                changed = True
+            elif isinstance(segmentation_settings, dict):
+                for sub_key, sub_val in segmentation_defaults.items():
+                    if sub_key not in segmentation_settings:
+                        segmentation_settings[sub_key] = sub_val
+                        changed = True
         data["ocr"] = ocr
         return changed
 
@@ -500,6 +545,7 @@ class SettingsManager:
         with self._file_lock:
             channels = self.settings.get("channels", [])
             tracking_defaults = self.settings.get("tracking", {})
+            ocr_defaults = self.settings.get("ocr", {})
         changed = False
         max_id = 0
         for channel in channels:
@@ -518,7 +564,7 @@ class SettingsManager:
                 max_id += 1
                 channel["id"] = max_id
                 changed = True
-            if self._fill_channel_defaults(channel, tracking_defaults):
+            if self._fill_channel_defaults(channel, tracking_defaults, ocr_defaults):
                 changed = True
 
         if changed:
@@ -760,3 +806,9 @@ def direction_defaults() -> Dict[str, float | int]:
     """Единый источник дефолтов определения направления движения."""
     defaults = SettingsManager._direction_defaults()
     return dict(defaults)
+
+
+def segmentation_defaults() -> Dict[str, Any]:
+    """Единый источник дефолтов параметров сегментации OCR."""
+    defaults = SettingsManager._segmentation_defaults()
+    return copy.deepcopy(defaults)
