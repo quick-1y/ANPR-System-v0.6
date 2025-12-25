@@ -57,7 +57,7 @@ class YOLODetector:
     @staticmethod
     def _is_cuda_op_missing(exc: Exception) -> bool:
         message = str(exc).lower()
-        return "torchvision::nms" in message or "notimplementederror" in message and "cuda" in message
+        return "torchvision::nms" in message or ("notimplementederror" in message and "cuda" in message)
 
     def _fallback_to_cpu(self, reason: str) -> None:
         if self.device.type == "cpu":
@@ -135,23 +135,34 @@ class YOLODetector:
             return []
 
         results: List[Dict[str, Any]] = []
-        for det in detections[0].boxes.data:
-            x1, y1, x2, y2, conf, _ = det.cpu().numpy()
+        boxes = detections[0].boxes
+        if boxes is None or boxes.data is None:
+            return results
+
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy() if boxes.conf is not None else [1.0] * len(xyxy)
+
+        for coords, conf in zip(xyxy, confs):
+            if len(coords) < 4:
+                continue
             if conf >= self._confidence_threshold:
-                results.append({"bbox": [int(x1), int(y1), int(x2), int(y2)], "confidence": float(conf)})
+                results.append(
+                    {"bbox": [int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])], "confidence": float(conf)}
+                )
         return self._filter_by_size(results)
 
     def _track_internal(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         detections = self.model.track(frame, persist=True, verbose=False, device=self.device)
         results: List[Dict[str, Any]] = []
-        if detections[0].boxes.id is None:
+        boxes = detections[0].boxes
+        if boxes is None or boxes.id is None:
             return results
 
-        track_ids = detections[0].boxes.id.int().cpu().tolist()
-        boxes = detections[0].boxes.xyxy.cpu().numpy()
-        confs = detections[0].boxes.conf.cpu().numpy()
+        track_ids = boxes.id.int().cpu().tolist()
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy() if boxes.conf is not None else [1.0] * len(track_ids)
 
-        for box, track_id, conf in zip(boxes, track_ids, confs):
+        for box, track_id, conf in zip(xyxy, track_ids, confs):
             if conf >= self._confidence_threshold:
                 results.append(
                     {
