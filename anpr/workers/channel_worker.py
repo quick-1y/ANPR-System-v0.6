@@ -261,47 +261,6 @@ def _config_fingerprint(config: dict) -> str:
     return json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _apply_plate_cooldown(
-    results: list[dict],
-    cache: dict[str, float],
-    cooldown_seconds: int,
-    now: Optional[float] = None,
-) -> list[dict]:
-    """Очищает результаты, попавшие в кулдаун по госномерам, и обновляет кеш."""
-
-    cooldown = max(0, int(cooldown_seconds or 0))
-    if cooldown <= 0 or not results:
-        return results
-
-    current_ts = float(now if now is not None else time.monotonic())
-    cutoff = current_ts - cooldown
-
-    # Чистим устаревшие записи, чтобы кеш не рос бесконечно
-    for plate, ts in list(cache.items()):
-        if ts < cutoff:
-            cache.pop(plate, None)
-
-    filtered: list[dict] = []
-    for res in results:
-        plate = res.get("text")
-        if not plate:
-            filtered.append(res)
-            continue
-
-        last_seen = cache.get(plate)
-        if last_seen is not None and (current_ts - last_seen) < cooldown:
-            muted = dict(res)
-            muted["text"] = ""
-            muted["cooldown_skipped"] = True
-            filtered.append(muted)
-            continue
-
-        cache[plate] = current_ts
-        filtered.append(res)
-
-    return filtered
-
-
 def _get_inference_executor() -> ProcessPoolExecutor:
     """Возвращает общий ProcessPoolExecutor для инференса."""
     global _INFERENCE_EXECUTOR
@@ -494,7 +453,6 @@ class ChannelWorker(QtCore.QThread):
         self._use_shared_memory = bool(inference_conf.get("shared_memory", True))
         self._roi_mask_cache: Optional[np.ndarray] = None
         self._roi_mask_key: Optional[tuple] = None
-        self._plate_cooldown: dict[str, float] = {}
 
     def update_runtime_config(
         self,
@@ -817,9 +775,6 @@ class ChannelWorker(QtCore.QThread):
             detections, results = await self._run_inference(frame, roi_frame, roi_rect)
             latency_ms = (time.monotonic() - start_ts) * 1000.0
             self._latency_ms.append(latency_ms)
-            with self._config_lock:
-                cooldown_seconds = self.config.cooldown_seconds
-            results = _apply_plate_cooldown(results, self._plate_cooldown, cooldown_seconds)
             self._last_debug = {"detections": detections, "results": results}
             self._update_track_history(detections)
             confidences = [
