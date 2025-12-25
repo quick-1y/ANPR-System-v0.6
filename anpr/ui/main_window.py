@@ -3315,6 +3315,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_debug_settings_to_ui()
         self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
 
+    def _load_debug_settings(self) -> None:
+        debug_settings = self.settings.get_debug_settings()
+        self._debug_settings_cache = debug_settings
+        self._apply_debug_settings_to_ui()
+        self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
+
     def _sync_time_now(self) -> None:
         self.time_correction_input.setDateTime(QtCore.QDateTime.currentDateTime())
 
@@ -3558,6 +3564,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 }
                 channels[index]["size_filter_enabled"] = self.size_filter_checkbox.isChecked()
                 channels[index]["region"] = self._build_region_payload()
+                channels[index].pop("debug", None)
 
                 debug_settings = self._save_debug_settings()
 

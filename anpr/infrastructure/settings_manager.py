@@ -319,6 +319,9 @@ class SettingsManager:
                 # Сохраняем только отсутствующие ключи, не перезаписывая пользовательские значения.
                 channel[key] = value
                 changed = True
+        if "debug" in channel:
+            channel.pop("debug", None)
+            changed = True
 
         direction_defaults = defaults.get("direction", self._direction_defaults())
         channel_direction = channel.get("direction")
