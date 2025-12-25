@@ -266,6 +266,7 @@ class ChannelRuntimeConfig:
 # Общий ProcessPoolExecutor (master-worker) для всех каналов
 _INFERENCE_EXECUTOR: ProcessPoolExecutor | None = None
 _INFERENCE_EXECUTOR_LOCK = threading.Lock()
+_INFERENCE_COMPONENT_CACHE: dict[str, tuple[ANPRPipeline, YOLODetector]] = {}
 
 
 def _config_fingerprint(config: dict) -> str:
@@ -283,6 +284,27 @@ def _get_inference_executor() -> ProcessPoolExecutor:
             max_workers = int(inference_conf.get("workers", max(1, os.cpu_count() or 1)))
             _INFERENCE_EXECUTOR = ProcessPoolExecutor(max_workers=max_workers)
     return _INFERENCE_EXECUTOR
+
+
+def _get_or_create_components(config: dict) -> tuple[ANPRPipeline, YOLODetector]:
+    key = _config_fingerprint(config)
+    cached = _INFERENCE_COMPONENT_CACHE.get(key)
+    if cached:
+        return cached
+
+    logger.debug("Создание моделей inference для конфига %s...", key[:32])
+    pipeline, detector = build_components(
+        config["best_shots"],
+        config["cooldown_seconds"],
+        config["min_confidence"],
+        config.get("plate_config", {}),
+        config.get("direction", {}),
+        config.get("min_plate_size"),
+        config.get("max_plate_size"),
+        config.get("size_filter_enabled", True),
+    )
+    _INFERENCE_COMPONENT_CACHE[key] = (pipeline, detector)
+    return pipeline, detector
 
 
 def _shutdown_executors() -> None:
@@ -328,30 +350,7 @@ def _run_inference_task(
     Выполняет инференс в отдельном процессе.
     Модели кэшируются локально в каждом процессе.
     """
-    
-    # Локальный кэш моделей для этого процесса
-    if not hasattr(_run_inference_task, "_local_cache"):
-        _run_inference_task._local_cache = {}
-    
-    # Создаем ключ для кэширования
-    key = _config_fingerprint(config)
-    
-    # Получаем или создаем модели в этом процессе
-    if key not in _run_inference_task._local_cache:
-        logger.debug(f"Создание моделей inference для конфига {key[:32]}...")
-        pipeline, detector = build_components(
-            config["best_shots"],
-            config["cooldown_seconds"],
-            config["min_confidence"],
-            config.get("plate_config", {}),
-            config.get("direction", {}),
-            config.get("min_plate_size"),
-            config.get("max_plate_size"),
-            config.get("size_filter_enabled", True),
-        )
-        _run_inference_task._local_cache[key] = (pipeline, detector)
-
-    pipeline, detector = _run_inference_task._local_cache[key]
+    pipeline, detector = _get_or_create_components(config)
 
     # Выполняем детекцию и распознавание
     detections = detector.track(roi_frame)
@@ -741,6 +740,20 @@ class ChannelWorker(QtCore.QThread):
             label = f"#{track_id} {direction}"
             self._draw_label(frame, label, (int(tail_x) + 6, int(tail_y) - 6))
 
+    @staticmethod
+    def _to_qimage(frame: Optional[cv2.Mat], *, is_rgb: bool = False) -> Optional[QtGui.QImage]:
+        """Конвертирует OpenCV Mat в QImage без зависимостей на инфраструктурный слой."""
+        if frame is None or frame.size == 0:
+            return None
+
+        rgb_frame = frame if is_rgb else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb_frame.shape
+        bytes_per_line = channels * width
+
+        return QtGui.QImage(
+            rgb_frame.data, width, height, bytes_per_line, QtGui.QImage.Format_RGB888
+        ).copy()
+
     def _update_metrics(self, now: float) -> None:
         self._frame_times.append(now)
         window_seconds = 2.0
@@ -830,8 +843,16 @@ class ChannelWorker(QtCore.QThread):
                 results,
                 channel_name,
                 frame,
-                rgb_frame,
             )
+            for event in events:
+                event["frame_image"] = self._to_qimage(rgb_frame, is_rgb=True)
+                bbox = event.get("bbox") or ()
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    x1, y1, x2, y2 = bbox
+                    plate_crop = frame[y1:y2, x1:x2] if frame is not None else None
+                else:
+                    plate_crop = None
+                event["plate_image"] = self._to_qimage(plate_crop)
             for event in events:
                 self.event_ready.emit(event)
         except Exception as e:

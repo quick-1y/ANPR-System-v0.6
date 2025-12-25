@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from ultralytics import YOLO
 
-from anpr.config import Config
 from anpr.infrastructure.logging_manager import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +23,7 @@ class YOLODetector:
         min_plate_size: Optional[Dict[str, int]] = None,
         max_plate_size: Optional[Dict[str, int]] = None,
         size_filter_enabled: bool = True,
+        detection_confidence_threshold: float = 0.5,
     ) -> None:
         self.model = YOLO(model_path)
         self.model.to(device)
@@ -32,6 +32,7 @@ class YOLODetector:
         self._max_plate_size = max_plate_size or {}
         self._size_filter_enabled = bool(size_filter_enabled)
         self._tracking_supported = True
+        self._confidence_threshold = max(0.0, min(1.0, float(detection_confidence_threshold)))
         self._last_frame_shape: Optional[tuple[int, ...]] = None
         logger.info("Детектор YOLO успешно загружен (model=%s, device=%s)", model_path, device)
 
@@ -104,7 +105,7 @@ class YOLODetector:
         results: List[Dict[str, Any]] = []
         for det in detections[0].boxes.data:
             x1, y1, x2, y2, conf, _ = det.cpu().numpy()
-            if conf >= Config().detection_confidence_threshold:
+            if conf >= self._confidence_threshold:
                 results.append({"bbox": [int(x1), int(y1), int(x2), int(y2)], "confidence": float(conf)})
         return self._filter_by_size(results)
 
@@ -119,7 +120,7 @@ class YOLODetector:
         confs = detections[0].boxes.conf.cpu().numpy()
 
         for box, track_id, conf in zip(boxes, track_ids, confs):
-            if conf >= Config().detection_confidence_threshold:
+            if conf >= self._confidence_threshold:
                 results.append(
                     {
                         "bbox": [int(box[0]), int(box[1]), int(box[2]), int(box[3])],

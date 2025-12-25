@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from anpr.config import Config
 from anpr.postprocessing.validator import PlatePostProcessor
 from anpr.preprocessing.plate_preprocessor import PlatePreprocessor
 from anpr.recognition.crnn_recognizer import CRNNRecognizer
@@ -175,7 +174,7 @@ class ANPRPipeline:
         recognizer: CRNNRecognizer,
         best_shots: int,
         cooldown_seconds: int = 0,
-        min_confidence: float = Config().ocr_confidence_threshold,
+        min_confidence: float = 0.6,
         postprocessor: Optional[PlatePostProcessor] = None,
         direction_config: Optional[Dict[str, float | int]] = None,
     ) -> None:
