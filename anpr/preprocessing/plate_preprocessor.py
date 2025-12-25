@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -142,9 +142,7 @@ class PlatePreprocessor:
             angle = angle + 90
         return float(angle), 0.35
 
-    def preprocess(self, plate_image: np.ndarray) -> np.ndarray:
-        if plate_image.size == 0:
-            return plate_image
+    def _prepare_gray_and_binary(self, plate_image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         gray = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
@@ -155,16 +153,120 @@ class PlatePreprocessor:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
+        return blurred, cleaned
+
+    def _preprocess_with_mask(self, plate_image: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        if plate_image.size == 0:
+            return plate_image, None
+
+        blurred, cleaned = self._prepare_gray_and_binary(plate_image)
 
         quadrilateral = self._detect_plate_quadrilateral(cleaned)
         if quadrilateral is not None:
-            return self._four_point_transform(plate_image, quadrilateral)
+            return (
+                self._four_point_transform(plate_image, quadrilateral),
+                self._four_point_transform(cleaned, quadrilateral),
+            )
 
         angle, confidence = self._estimate_skew_angle(blurred, cleaned)
         if confidence < 0.35:
-            return plate_image
+            return plate_image, cleaned
         if abs(angle) < 5:
-            return plate_image
+            return plate_image, cleaned
         if abs(angle) > 45:
-            return plate_image
-        return self._rotate_bound(plate_image, angle)
+            return plate_image, cleaned
+        return self._rotate_bound(plate_image, angle), self._rotate_bound(cleaned, angle)
+
+    def _sort_boxes(
+        self, boxes: List[Tuple[int, int, int, int]], row_merge_threshold: float = 0.6
+    ) -> List[Tuple[int, int, int, int]]:
+        if not boxes:
+            return []
+
+        heights = [h for (_, _, _, h) in boxes]
+        median_height = float(np.median(heights)) if heights else 0.0
+        row_threshold = max(4.0, median_height * max(0.1, row_merge_threshold))
+
+        rows: List[List[Tuple[int, int, int, int]]] = []
+        for box in sorted(boxes, key=lambda b: b[1]):
+            x, y, _, h = box
+            center_y = y + h / 2.0
+            placed = False
+            for row in rows:
+                row_centers = [item[1] + item[3] / 2.0 for item in row]
+                row_center = float(np.mean(row_centers)) if row_centers else center_y
+                if abs(center_y - row_center) <= row_threshold:
+                    row.append(box)
+                    placed = True
+                    break
+            if not placed:
+                rows.append([box])
+
+        ordered_rows = sorted(rows, key=lambda r: min(item[1] for item in r))
+        for row in ordered_rows:
+            row.sort(key=lambda b: b[0])
+
+        flattened: List[Tuple[int, int, int, int]] = []
+        for row in ordered_rows:
+            flattened.extend(row)
+        return flattened
+
+    def preprocess(self, plate_image: np.ndarray) -> np.ndarray:
+        processed, _ = self._preprocess_with_mask(plate_image)
+        return processed
+
+    def extract_components(self, plate_image: np.ndarray, segmentation_config: Dict[str, Any]) -> tuple[np.ndarray, List[np.ndarray]]:
+        processed, binary = self._preprocess_with_mask(plate_image)
+        if processed.size == 0 or binary is None:
+            return processed, []
+
+        height, width = binary.shape[:2]
+        plate_area = float(max(1, height * width))
+
+        min_area_ratio = float(segmentation_config.get("min_symbol_area_ratio", 0.0025))
+        max_area_ratio = float(segmentation_config.get("max_symbol_area_ratio", 0.18))
+        min_aspect = float(segmentation_config.get("min_symbol_aspect_ratio", 0.18))
+        max_aspect = float(segmentation_config.get("max_symbol_aspect_ratio", 1.35))
+        padding = int(segmentation_config.get("padding_px", 2))
+        max_components = int(segmentation_config.get("max_components", 18))
+        row_merge_threshold = float(segmentation_config.get("row_merge_threshold", 0.55))
+
+        contours, _ = cv2.findContours(binary.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filtered_boxes: List[Tuple[int, int, int, int]] = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            area = w * h
+            if area <= 0:
+                continue
+            area_ratio = area / plate_area
+            if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
+                continue
+            aspect_ratio = w / float(h)
+            if aspect_ratio < min_aspect or aspect_ratio > max_aspect:
+                continue
+            filtered_boxes.append((x, y, w, h))
+
+        if not filtered_boxes:
+            return processed, []
+
+        filtered_boxes = sorted(filtered_boxes, key=lambda b: b[2] * b[3], reverse=True)[: max_components * 2]
+        sorted_boxes = self._sort_boxes(filtered_boxes, row_merge_threshold)[:max_components]
+        if not sorted_boxes:
+            return processed, []
+
+        height = processed.shape[0]
+        width = processed.shape[1]
+        sorted_segments: List[np.ndarray] = []
+        for x, y, w, h in sorted_boxes:
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(width, x + w + padding)
+            y2 = min(height, y + h + padding)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            crop = processed[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            sorted_segments.append(crop)
+
+        return processed, sorted_segments

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # /anpr/ui/main_window.py
+import copy
 import logging
 import math
 import os
@@ -18,7 +19,7 @@ from zoneinfo import ZoneInfo
 from anpr.config import Config
 from anpr.infrastructure.settings_manager import DEFAULT_ROI_POINTS
 from anpr.postprocessing.country_config import CountryConfigLoader
-from anpr.workers.channel_worker import ChannelWorker
+from anpr.workers.channel_worker import ChannelWorker, SegmentationSettings
 from anpr.infrastructure.logging_manager import get_logger
 from anpr.infrastructure.storage import EventDatabase
 
@@ -2940,6 +2941,101 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         recognition_form.addRow("Мин. уверенность OCR:", self.min_conf_input)
 
+        segmentation_group = QtWidgets.QGroupBox("Сегментация символов (эксперимент)")
+        segmentation_layout = QtWidgets.QGridLayout()
+        segmentation_layout.setHorizontalSpacing(12)
+        segmentation_layout.setVerticalSpacing(8)
+
+        self.segmentation_enabled_checkbox = QtWidgets.QCheckBox("Включить сегментацию по контурам")
+        self.segmentation_enabled_checkbox.toggled.connect(self._on_segmentation_toggled)
+        segmentation_layout.addWidget(self.segmentation_enabled_checkbox, 0, 0, 1, 4)
+
+        self.seg_min_area_ratio_input = QtWidgets.QDoubleSpinBox()
+        self.seg_min_area_ratio_input.setRange(0.0, 1.0)
+        self.seg_min_area_ratio_input.setDecimals(4)
+        self.seg_min_area_ratio_input.setSingleStep(0.0005)
+        self.seg_min_area_ratio_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_min_area_ratio_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_max_area_ratio_input = QtWidgets.QDoubleSpinBox()
+        self.seg_max_area_ratio_input.setRange(0.0, 1.0)
+        self.seg_max_area_ratio_input.setDecimals(4)
+        self.seg_max_area_ratio_input.setSingleStep(0.0005)
+        self.seg_max_area_ratio_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_max_area_ratio_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_min_aspect_input = QtWidgets.QDoubleSpinBox()
+        self.seg_min_aspect_input.setRange(0.0, 3.0)
+        self.seg_min_aspect_input.setDecimals(2)
+        self.seg_min_aspect_input.setSingleStep(0.05)
+        self.seg_min_aspect_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_min_aspect_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_max_aspect_input = QtWidgets.QDoubleSpinBox()
+        self.seg_max_aspect_input.setRange(0.0, 3.0)
+        self.seg_max_aspect_input.setDecimals(2)
+        self.seg_max_aspect_input.setSingleStep(0.05)
+        self.seg_max_aspect_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_max_aspect_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_padding_input = QtWidgets.QSpinBox()
+        self.seg_padding_input.setRange(0, 32)
+        self.seg_padding_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_padding_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_max_components_input = QtWidgets.QSpinBox()
+        self.seg_max_components_input.setRange(1, 64)
+        self.seg_max_components_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_max_components_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        self.seg_row_merge_input = QtWidgets.QDoubleSpinBox()
+        self.seg_row_merge_input.setRange(0.1, 2.0)
+        self.seg_row_merge_input.setDecimals(2)
+        self.seg_row_merge_input.setSingleStep(0.05)
+        self.seg_row_merge_input.setMaximumWidth(self.COMPACT_FIELD_WIDTH)
+        self.seg_row_merge_input.setMinimumHeight(self.BUTTON_HEIGHT)
+
+        min_area_label = QtWidgets.QLabel("Мин. доля площади символа:")
+        max_area_label = QtWidgets.QLabel("Макс. доля площади символа:")
+        min_aspect_label = QtWidgets.QLabel("Мин. аспект символа:")
+        max_aspect_label = QtWidgets.QLabel("Макс. аспект символа:")
+        padding_label = QtWidgets.QLabel("Паддинг вокруг символа (px):")
+        max_components_label = QtWidgets.QLabel("Макс. компонентов в батче:")
+        row_merge_label = QtWidgets.QLabel("Чувствительность к строкам:")
+
+        for label in (
+            min_area_label,
+            max_area_label,
+            min_aspect_label,
+            max_aspect_label,
+            padding_label,
+            max_components_label,
+            row_merge_label,
+        ):
+            self._ensure_label_width(label)
+
+        segmentation_layout.addWidget(min_area_label, 1, 0)
+        segmentation_layout.addWidget(self.seg_min_area_ratio_input, 1, 1)
+        segmentation_layout.addWidget(max_area_label, 1, 2)
+        segmentation_layout.addWidget(self.seg_max_area_ratio_input, 1, 3)
+
+        segmentation_layout.addWidget(min_aspect_label, 2, 0)
+        segmentation_layout.addWidget(self.seg_min_aspect_input, 2, 1)
+        segmentation_layout.addWidget(max_aspect_label, 2, 2)
+        segmentation_layout.addWidget(self.seg_max_aspect_input, 2, 3)
+
+        segmentation_layout.addWidget(padding_label, 3, 0)
+        segmentation_layout.addWidget(self.seg_padding_input, 3, 1)
+        segmentation_layout.addWidget(max_components_label, 3, 2)
+        segmentation_layout.addWidget(self.seg_max_components_input, 3, 3)
+
+        segmentation_layout.addWidget(row_merge_label, 4, 0)
+        segmentation_layout.addWidget(self.seg_row_merge_input, 4, 1)
+
+        segmentation_group.setLayout(segmentation_layout)
+        self._apply_stylesheet(segmentation_group, lambda: self.group_box_style)
+        recognition_form.addRow("", segmentation_group)
+
         motion_form = make_form_tab()
         tabs.setTabText(2, "Детектор движения")
         self.detection_mode_input = QtWidgets.QComboBox()
@@ -3419,6 +3515,31 @@ class MainWindow(QtWidgets.QMainWindow):
             self.best_shots_input.setValue(int(channel.get("best_shots", self.settings.get_best_shots())))
             self.cooldown_input.setValue(int(channel.get("cooldown_seconds", self.settings.get_cooldown_seconds())))
             self.min_conf_input.setValue(float(channel.get("ocr_min_confidence", self.settings.get_min_confidence())))
+            segmentation_defaults = self.settings.get_ocr_settings().get("segmentation", {})
+            segmentation = channel.get("ocr_segmentation", segmentation_defaults)
+            self.segmentation_enabled_checkbox.blockSignals(True)
+            self.segmentation_enabled_checkbox.setChecked(bool(segmentation.get("enabled", False)))
+            self.segmentation_enabled_checkbox.blockSignals(False)
+            self.seg_min_area_ratio_input.setValue(
+                float(segmentation.get("min_symbol_area_ratio", segmentation_defaults.get("min_symbol_area_ratio", 0.0025)))
+            )
+            self.seg_max_area_ratio_input.setValue(
+                float(segmentation.get("max_symbol_area_ratio", segmentation_defaults.get("max_symbol_area_ratio", 0.18)))
+            )
+            self.seg_min_aspect_input.setValue(
+                float(segmentation.get("min_symbol_aspect_ratio", segmentation_defaults.get("min_symbol_aspect_ratio", 0.18)))
+            )
+            self.seg_max_aspect_input.setValue(
+                float(segmentation.get("max_symbol_aspect_ratio", segmentation_defaults.get("max_symbol_aspect_ratio", 1.35)))
+            )
+            self.seg_padding_input.setValue(int(segmentation.get("padding_px", segmentation_defaults.get("padding_px", 2))))
+            self.seg_max_components_input.setValue(
+                int(segmentation.get("max_components", segmentation_defaults.get("max_components", 18)))
+            )
+            self.seg_row_merge_input.setValue(
+                float(segmentation.get("row_merge_threshold", segmentation_defaults.get("row_merge_threshold", 0.55)))
+            )
+            self._on_segmentation_toggled(self.segmentation_enabled_checkbox.isChecked())
             self.detection_mode_input.setCurrentIndex(
                 max(0, self.detection_mode_input.findData(channel.get("detection_mode", "motion")))
             )
@@ -3477,6 +3598,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "min_plate_size": self.settings.get_plate_size_defaults().get("min_plate_size"),
                 "max_plate_size": self.settings.get_plate_size_defaults().get("max_plate_size"),
                 "size_filter_enabled": True,
+                "ocr_segmentation": copy.deepcopy(self.settings.get_ocr_settings().get("segmentation")),
             }
         )
         self.settings.save_channels(channels)
@@ -3508,6 +3630,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 channels[index]["best_shots"] = int(self.best_shots_input.value())
                 channels[index]["cooldown_seconds"] = int(self.cooldown_input.value())
                 channels[index]["ocr_min_confidence"] = float(self.min_conf_input.value())
+                segmentation_payload = SegmentationSettings.from_dict(
+                    {
+                        "enabled": self.segmentation_enabled_checkbox.isChecked(),
+                        "min_symbol_area_ratio": float(self.seg_min_area_ratio_input.value()),
+                        "max_symbol_area_ratio": float(self.seg_max_area_ratio_input.value()),
+                        "min_symbol_aspect_ratio": float(self.seg_min_aspect_input.value()),
+                        "max_symbol_aspect_ratio": float(self.seg_max_aspect_input.value()),
+                        "padding_px": int(self.seg_padding_input.value()),
+                        "max_components": int(self.seg_max_components_input.value()),
+                        "row_merge_threshold": float(self.seg_row_merge_input.value()),
+                    },
+                    self.settings.get_ocr_settings().get("segmentation"),
+                ).to_dict()
+                channels[index]["ocr_segmentation"] = segmentation_payload
                 channels[index]["detection_mode"] = self.detection_mode_input.currentData()
                 channels[index]["detector_frame_stride"] = int(self.detector_stride_input.value())
                 channels[index]["motion_threshold"] = float(self.motion_threshold_input.value())
@@ -3724,6 +3860,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         else:
             self.plate_size_hint.setText("Фильтр выключен — рамки не ограничиваются по размеру")
+
+    def _on_segmentation_toggled(self, enabled: bool) -> None:
+        widgets = (
+            self.seg_min_area_ratio_input,
+            self.seg_max_area_ratio_input,
+            self.seg_min_aspect_input,
+            self.seg_max_aspect_input,
+            self.seg_padding_input,
+            self.seg_max_components_input,
+            self.seg_row_merge_input,
+        )
+        for widget in widgets:
+            widget.setEnabled(enabled)
 
     def _on_roi_usage_toggled(self, enabled: bool) -> None:
         widgets = (

@@ -177,6 +177,7 @@ class ANPRPipeline:
         min_confidence: float = 0.6,
         postprocessor: Optional[PlatePostProcessor] = None,
         direction_config: Optional[Dict[str, float | int]] = None,
+        segmentation_config: Optional[Dict[str, object]] = None,
     ) -> None:
         self.recognizer = recognizer
         self.aggregator = TrackAggregator(best_shots)
@@ -186,6 +187,8 @@ class ANPRPipeline:
         self.postprocessor = postprocessor
         self.preprocessor = PlatePreprocessor()
         self.direction_estimator = TrackDirectionEstimator.from_config(direction_config or {})
+        self.segmentation_config = segmentation_config or {}
+        self._segmentation_enabled = bool(self.segmentation_config.get("enabled"))
 
     def _on_cooldown(self, plate: str) -> bool:
         last_seen = self._last_seen.get(plate)
@@ -196,9 +199,18 @@ class ANPRPipeline:
     def _touch_plate(self, plate: str) -> None:
         self._last_seen[plate] = time.monotonic()
 
+    def _merge_segments(self, segment_results: List[tuple[str, float]]) -> tuple[str, float]:
+        if not segment_results:
+            return "", 0.0
+        texts = [text for text, _ in segment_results if text]
+        combined_text = "".join(texts)
+        confidences = [max(0.0, float(conf)) for _, conf in segment_results]
+        avg_confidence = float(sum(confidences) / len(confidences)) if confidences else 0.0
+        return combined_text, avg_confidence
+
     def process_frame(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         plate_inputs: List[np.ndarray] = []
-        detection_indices: List[int] = []
+        recognition_plan: List[Dict[str, int | bool]] = []
 
         for idx, detection in enumerate(detections):
             if self.direction_estimator and detection.get("track_id") is not None:
@@ -211,16 +223,43 @@ class ANPRPipeline:
             roi = frame[y1:y2, x1:x2]
 
             if roi.size > 0:
-                processed_plate = self.preprocessor.preprocess(roi)
+                processed_plate = None
+                segments: list[np.ndarray] = []
+                if self._segmentation_enabled:
+                    processed_plate, segments = self.preprocessor.extract_components(roi, self.segmentation_config)
+                else:
+                    processed_plate = self.preprocessor.preprocess(roi)
 
-                if processed_plate.size > 0:
-                    plate_inputs.append(processed_plate)
-                    detection_indices.append(idx)
+                if processed_plate is not None and processed_plate.size > 0:
+                    use_segments = self._segmentation_enabled and bool(segments)
+                    start_index = len(plate_inputs)
+                    if use_segments:
+                        plate_inputs.extend(segments)
+                        recognition_plan.append(
+                            {"detection_idx": idx, "start": start_index, "count": len(segments), "segmented": True}
+                        )
+                    else:
+                        plate_inputs.append(processed_plate)
+                        recognition_plan.append(
+                            {"detection_idx": idx, "start": start_index, "count": 1, "segmented": False}
+                        )
 
         batch_results = self.recognizer.recognize_batch(plate_inputs)
 
-        for detection_idx, (current_text, confidence) in zip(detection_indices, batch_results):
+        for plan in recognition_plan:
+            detection_idx = int(plan["detection_idx"])
             detection = detections[detection_idx]
+            start = int(plan["start"])
+            count = int(plan["count"])
+            is_segmented = bool(plan.get("segmented"))
+            segment_results = batch_results[start : start + count] if start < len(batch_results) else []
+
+            if is_segmented and segment_results:
+                current_text, confidence = self._merge_segments(segment_results)
+            elif segment_results:
+                current_text, confidence = segment_results[0]
+            else:
+                current_text, confidence = "", 0.0
 
             if confidence < self.min_confidence:
                 detection["text"] = "Нечитаемо"

@@ -8,7 +8,17 @@
     "img_height": 32,
     "img_width": 128,
     "alphabet": "0123456789ABCEHKMOPTXY",
-    "confidence_threshold": 0.6
+    "confidence_threshold": 0.6,
+    "segmentation": {
+      "enabled": false,
+      "min_symbol_area_ratio": 0.0025,
+      "max_symbol_area_ratio": 0.18,
+      "min_symbol_aspect_ratio": 0.18,
+      "max_symbol_aspect_ratio": 1.35,
+      "padding_px": 2,
+      "max_components": 18,
+      "row_merge_threshold": 0.55
+    }
   },
   "detector": {
     "confidence_threshold": 0.5

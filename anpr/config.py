@@ -78,6 +78,11 @@ class Config:
         return float(self.ocr_config.get("confidence_threshold", 0.6))
 
     @property
+    def ocr_segmentation(self) -> Dict[str, Any]:
+        segmentation = self.ocr_config.get("segmentation") or {}
+        return dict(segmentation)
+
+    @property
     def detector_config(self) -> Dict[str, Any]:
         return self._settings.get_detector_settings()
 

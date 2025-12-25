@@ -1,5 +1,5 @@
-from anpr.infrastructure.settings_manager import SettingsManager, direction_defaults, plate_size_defaults
-from anpr.workers.channel_worker import DirectionSettings, PlateSize
+from anpr.infrastructure.settings_manager import SettingsManager, direction_defaults, plate_size_defaults, segmentation_defaults
+from anpr.workers.channel_worker import DirectionSettings, PlateSize, SegmentationSettings
 
 
 def test_direction_settings_follow_exported_defaults(monkeypatch):
@@ -32,3 +32,22 @@ def test_plate_size_defaults_forwarded(monkeypatch):
     assert min_size.to_dict() == custom_defaults["min_plate_size"]
     assert max_size.to_dict() == custom_defaults["max_plate_size"]
     assert plate_size_defaults() == custom_defaults
+
+
+def test_segmentation_defaults_forwarded(monkeypatch):
+    custom_defaults = {
+        "enabled": True,
+        "min_symbol_area_ratio": 0.004,
+        "max_symbol_area_ratio": 0.12,
+        "min_symbol_aspect_ratio": 0.22,
+        "max_symbol_aspect_ratio": 1.25,
+        "padding_px": 3,
+        "max_components": 12,
+        "row_merge_threshold": 0.7,
+    }
+    monkeypatch.setattr(SettingsManager, "_segmentation_defaults", staticmethod(lambda: custom_defaults))
+
+    segmentation = SegmentationSettings.from_dict(None)
+
+    assert segmentation.to_dict() == custom_defaults
+    assert segmentation_defaults() == custom_defaults
