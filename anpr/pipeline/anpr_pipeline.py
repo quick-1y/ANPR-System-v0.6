@@ -58,6 +58,11 @@ class TrackAggregator:
     def clear_last(self, track_id: int) -> None:
         self.last_emitted.pop(track_id, None)
 
+    def reset(self, track_id: int) -> None:
+        """Полностью сбрасывает историю и последний результат трека."""
+        self.track_texts.pop(track_id, None)
+        self.last_emitted.pop(track_id, None)
+
 
 class TrackDirectionEstimator:
     """Оценивает направление движения по истории рамок номера."""
@@ -234,17 +239,16 @@ class ANPRPipeline:
             if self.postprocessor and detection.get("text"):
                 processed = self.postprocessor.process(detection["text"])
                 detection["original_text"] = detection.get("text")
-                if processed.is_valid:
-                    detection["text"] = processed.plate
-                elif processed.plate:
-                    detection["text"] = processed.plate or detection.get("text")
-                else:
-                    detection["text"] = ""
                 detection["country"] = processed.country
                 detection["format"] = processed.format_name
                 detection["validated"] = processed.is_valid
-                if not detection["text"] and "track_id" in detection:
-                    self.aggregator.clear_last(detection["track_id"])
+
+                if processed.is_valid:
+                    detection["text"] = processed.plate
+                else:
+                    detection["text"] = ""
+                    if "track_id" in detection:
+                        self.aggregator.reset(int(detection["track_id"]))
 
             if self.cooldown_seconds > 0 and detection.get("text"):
                 if self._on_cooldown(detection["text"]):
