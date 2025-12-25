@@ -1,4 +1,4 @@
-# /anpr/detection/yolo_detector.py
+# /anpr/infrastructure/logging_manager.py
 """Централизованная настройка логирования приложения."""
 
 import logging
@@ -61,4 +61,3 @@ def get_logger(name: str) -> logging.Logger:
     """Утилита для получения именованного логгера."""
 
     return logging.getLogger(name)
-
