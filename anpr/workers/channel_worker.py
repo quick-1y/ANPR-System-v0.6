@@ -7,6 +7,7 @@ import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 import threading
+from typing import TYPE_CHECKING
 import atexit
 import logging
 from multiprocessing import shared_memory
@@ -30,6 +31,10 @@ from anpr.infrastructure.settings_manager import (
 )
 from anpr.infrastructure.storage import AsyncEventDatabase
 from anpr.workers.motion_controller import MotionController
+
+if TYPE_CHECKING:
+    from anpr.pipeline.anpr_pipeline import ANPRPipeline
+    from anpr.detection.yolo_detector import YOLODetector
 
 logger = get_logger(__name__)
 
@@ -266,7 +271,7 @@ class ChannelRuntimeConfig:
 # Общий ProcessPoolExecutor (master-worker) для всех каналов
 _INFERENCE_EXECUTOR: ProcessPoolExecutor | None = None
 _INFERENCE_EXECUTOR_LOCK = threading.Lock()
-_INFERENCE_COMPONENT_CACHE: dict[str, tuple[ANPRPipeline, YOLODetector]] = {}
+_INFERENCE_COMPONENT_CACHE: dict[str, tuple["ANPRPipeline", "YOLODetector"]] = {}
 
 
 def _config_fingerprint(config: dict) -> str:
