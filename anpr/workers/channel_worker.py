@@ -232,7 +232,7 @@ class ChannelRuntimeConfig:
         settings = SettingsManager()
         size_defaults = settings.get_plate_size_defaults()
         direction_defaults = settings.get_direction_defaults()
-        resolved_debug = debug_settings if debug_settings is not None else channel_conf.get("debug")
+        resolved_debug = debug_settings if debug_settings is not None else settings.get_debug_settings()
         return cls(
             name=channel_conf.get("name", "Канал"),
             source=str(channel_conf.get("source", "0")),
