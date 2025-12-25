@@ -3119,6 +3119,32 @@ class MainWindow(QtWidgets.QMainWindow):
         roi_layout.addWidget(self.roi_hint_label)
         roi_form.addRow("", roi_group)
 
+        debug_form = make_form_tab()
+        tabs.setTabText(4, "Debug")
+        debug_row = QtWidgets.QHBoxLayout()
+        self.debug_detection_global_checkbox = QtWidgets.QCheckBox("Рамки детекции")
+        self.debug_ocr_global_checkbox = QtWidgets.QCheckBox("Символы OCR")
+        self.debug_direction_global_checkbox = QtWidgets.QCheckBox("Трек движения")
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+        ):
+            debug_row.addWidget(checkbox)
+        debug_row.addStretch(1)
+        debug_form.addRow("Оверлеи:", debug_row)
+        self.debug_log_checkbox = QtWidgets.QCheckBox("Лог")
+        self.debug_log_checkbox.setToolTip("Показывать поток логов под сеткой наблюдения")
+        debug_form.addRow("Логирование:", self.debug_log_checkbox)
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+            self.debug_log_checkbox,
+        ):
+            checkbox.stateChanged.connect(self._on_debug_settings_changed)
+        self._apply_debug_settings_to_ui()
+
         right_panel.addWidget(tabs)
 
         refresh_btn = QtWidgets.QPushButton("Обновить кадр")
@@ -3275,6 +3301,13 @@ class MainWindow(QtWidgets.QMainWindow):
         offset_minutes = int(time_settings.get("offset_minutes", 0) or 0)
         adjusted_dt = QtCore.QDateTime.currentDateTime().addSecs(offset_minutes * 60)
         self.time_correction_input.setDateTime(adjusted_dt)
+        self._load_debug_settings()
+
+    def _load_debug_settings(self) -> None:
+        debug_settings = self.settings.get_debug_settings()
+        self._debug_settings_cache = debug_settings
+        self._apply_debug_settings_to_ui()
+        self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
 
     def _load_debug_settings(self) -> None:
         debug_settings = self.settings.get_debug_settings()
