@@ -21,7 +21,7 @@ from anpr.infrastructure.event_writer import EventWriter
 from anpr.pipeline.anpr_pipeline import TrackDirectionEstimator
 from anpr.pipeline.factory import build_components
 from anpr.infrastructure.logging_manager import get_logger
-from anpr.infrastructure.settings_manager import SettingsManager
+from anpr.infrastructure.settings_manager import SettingsManager, normalize_region_config
 from anpr.infrastructure.storage import AsyncEventDatabase
 from anpr.workers.motion_controller import MotionController
 
@@ -37,25 +37,17 @@ class Region:
 
     @classmethod
     def from_dict(cls, region_conf: Optional[Dict[str, Any]]) -> "Region":
-        if not region_conf:
-            return cls(points=[], unit="px")
+        normalized = normalize_region_config(region_conf)
+        unit = normalized.get("unit", "px")
+        raw_points = normalized.get("points", [])
+        points = [(float(point.get("x", 0)), float(point.get("y", 0))) for point in raw_points]
+        return cls(points=points, unit=unit if unit in ("px", "percent") else "px")
 
-        unit = str(region_conf.get("unit", "px")).lower()
-        raw_points = region_conf.get("points")
-        if raw_points:
-            points = [
-                (float(p.get("x", 0)), float(p.get("y", 0)))
-                for p in raw_points
-                if isinstance(p, dict)
-            ]
-            return cls(points=points, unit=unit if unit in ("px", "percent") else "px")
-
-        x = float(region_conf.get("x", 0))
-        y = float(region_conf.get("y", 0))
-        width = float(region_conf.get("width", 100))
-        height = float(region_conf.get("height", 100))
-        rect_points = [(x, y), (x + width, y), (x + width, y + height), (x, y + height)]
-        return cls(points=rect_points, unit="percent")
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "unit": self.unit,
+            "points": [{"x": float(x), "y": float(y)} for x, y in self.points],
+        }
 
     def _clamp_points(self, points: List[Tuple[int, int]], width: int, height: int) -> List[Tuple[int, int]]:
         if not points:
