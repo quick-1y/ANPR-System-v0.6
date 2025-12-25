@@ -184,13 +184,13 @@ class SettingsManager:
 
     @staticmethod
     def _channel_defaults(tracking_defaults: Dict[str, Any]) -> Dict[str, Any]:
-        size_defaults = SettingsManager._plate_size_defaults()
+        size_defaults = plate_size_defaults()
         return {
             "enabled": True,
             "best_shots": int(tracking_defaults.get("best_shots", 3)),
             "cooldown_seconds": int(tracking_defaults.get("cooldown_seconds", 5)),
             "ocr_min_confidence": float(tracking_defaults.get("ocr_min_confidence", 0.6)),
-            "direction": dict(tracking_defaults.get("direction", SettingsManager._direction_defaults())),
+            "direction": dict(tracking_defaults.get("direction", direction_defaults())),
             "roi_enabled": True,
             "region": {"unit": "px", "points": [point.copy() for point in DEFAULT_ROI_POINTS]},
             "detection_mode": "motion",
@@ -692,12 +692,10 @@ class SettingsManager:
             return copy.deepcopy(self.settings.get("inference", {}))
 
     def get_plate_size_defaults(self) -> Dict[str, Dict[str, int]]:
-        defaults = self._plate_size_defaults()
-        return {key: value.copy() for key, value in defaults.items()}
+        return plate_size_defaults()
 
     def get_direction_defaults(self) -> Dict[str, float | int]:
-        defaults = self._direction_defaults()
-        return dict(defaults)
+        return direction_defaults()
 
     def refresh(self) -> None:
         with self._file_lock:
@@ -712,3 +710,15 @@ class SettingsManager:
         else:
             channels.append(data)
         self.save_channels(channels)
+
+
+def plate_size_defaults() -> Dict[str, Dict[str, int]]:
+    """Единый источник дефолтов размеров рамки номера."""
+    defaults = SettingsManager._plate_size_defaults()
+    return {key: value.copy() for key, value in defaults.items()}
+
+
+def direction_defaults() -> Dict[str, float | int]:
+    """Единый источник дефолтов определения направления движения."""
+    defaults = SettingsManager._direction_defaults()
+    return dict(defaults)

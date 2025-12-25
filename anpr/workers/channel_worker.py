@@ -21,7 +21,12 @@ from anpr.infrastructure.event_writer import EventWriter
 from anpr.pipeline.anpr_pipeline import TrackDirectionEstimator
 from anpr.pipeline.factory import build_components
 from anpr.infrastructure.logging_manager import get_logger
-from anpr.infrastructure.settings_manager import SettingsManager, normalize_region_config
+from anpr.infrastructure.settings_manager import (
+    SettingsManager,
+    direction_defaults,
+    normalize_region_config,
+    plate_size_defaults,
+)
 from anpr.infrastructure.storage import AsyncEventDatabase
 from anpr.workers.motion_controller import MotionController
 
@@ -116,10 +121,15 @@ class PlateSize:
     height: int = 0
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]], defaults: Optional[Dict[str, Any]] = None) -> "PlateSize":
-        defaults = defaults or {}
-        width = int((data or {}).get("width", defaults.get("width", 0)) or 0)
-        height = int((data or {}).get("height", defaults.get("height", 0)) or 0)
+    def from_dict(
+        cls,
+        data: Optional[Dict[str, Any]],
+        defaults: Optional[Dict[str, Any]] = None,
+        default_label: str = "min_plate_size",
+    ) -> "PlateSize":
+        resolved_defaults = defaults or plate_size_defaults().get(default_label, {})
+        width = int((data or {}).get("width", resolved_defaults.get("width", 0)) or 0)
+        height = int((data or {}).get("height", resolved_defaults.get("height", 0)) or 0)
         return cls(width=max(0, width), height=max(0, height))
 
     def to_dict(self) -> Dict[str, int]:
@@ -143,18 +153,18 @@ class DirectionSettings:
         data: Optional[Dict[str, Any]],
         defaults: Optional[Dict[str, Any]] = None,
     ) -> "DirectionSettings":
-        defaults = defaults or {}
+        resolved_defaults = defaults or direction_defaults()
         data = data or {}
         return cls(
-            history_size=int(data.get("history_size", defaults.get("history_size", cls.history_size))),
-            min_track_length=int(data.get("min_track_length", defaults.get("min_track_length", cls.min_track_length))),
-            smoothing_window=int(data.get("smoothing_window", defaults.get("smoothing_window", cls.smoothing_window))),
+            history_size=int(data.get("history_size", resolved_defaults.get("history_size", cls.history_size))),
+            min_track_length=int(data.get("min_track_length", resolved_defaults.get("min_track_length", cls.min_track_length))),
+            smoothing_window=int(data.get("smoothing_window", resolved_defaults.get("smoothing_window", cls.smoothing_window))),
             confidence_threshold=float(
-                data.get("confidence_threshold", defaults.get("confidence_threshold", cls.confidence_threshold))
+                data.get("confidence_threshold", resolved_defaults.get("confidence_threshold", cls.confidence_threshold))
             ),
-            jitter_pixels=float(data.get("jitter_pixels", defaults.get("jitter_pixels", cls.jitter_pixels))),
+            jitter_pixels=float(data.get("jitter_pixels", resolved_defaults.get("jitter_pixels", cls.jitter_pixels))),
             min_area_change_ratio=float(
-                data.get("min_area_change_ratio", defaults.get("min_area_change_ratio", cls.min_area_change_ratio))
+                data.get("min_area_change_ratio", resolved_defaults.get("min_area_change_ratio", cls.min_area_change_ratio))
             ),
         )
 
@@ -237,8 +247,16 @@ class ChannelRuntimeConfig:
             region=Region.from_dict(channel_conf.get("region")),
             debug=DebugOptions.from_dict(channel_conf.get("debug")),
             size_filter_enabled=bool(channel_conf.get("size_filter_enabled", True)),
-            min_plate_size=PlateSize.from_dict(channel_conf.get("min_plate_size"), size_defaults.get("min_plate_size")),
-            max_plate_size=PlateSize.from_dict(channel_conf.get("max_plate_size"), size_defaults.get("max_plate_size")),
+            min_plate_size=PlateSize.from_dict(
+                channel_conf.get("min_plate_size"),
+                size_defaults.get("min_plate_size"),
+                default_label="min_plate_size",
+            ),
+            max_plate_size=PlateSize.from_dict(
+                channel_conf.get("max_plate_size"),
+                size_defaults.get("max_plate_size"),
+                default_label="max_plate_size",
+            ),
             direction=DirectionSettings.from_dict(channel_conf.get("direction"), direction_defaults),
         )
 
