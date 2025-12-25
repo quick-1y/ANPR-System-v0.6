@@ -1,4 +1,4 @@
-#anpr/inftastructure/event_writer.py
+# /anpr/infrastructure/event_writer.py
 from __future__ import annotations
 
 import os
@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import cv2
-from PyQt5 import QtGui
 
 from anpr.infrastructure.logging_manager import get_logger
 from anpr.infrastructure.storage import AsyncEventDatabase
@@ -58,27 +57,12 @@ class EventWriter:
 
         return None
 
-    @staticmethod
-    def _to_qimage(frame: Optional[cv2.Mat], *, is_rgb: bool = False) -> Optional[QtGui.QImage]:
-        """Конвертирует OpenCV Mat в QImage."""
-        if frame is None or frame.size == 0:
-            return None
-
-        rgb_frame = frame if is_rgb else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        height, width, channels = rgb_frame.shape
-        bytes_per_line = channels * width
-
-        return QtGui.QImage(
-            rgb_frame.data, width, height, bytes_per_line, QtGui.QImage.Format_RGB888
-        ).copy()
-
     async def write_events(
         self,
         source: str,
         results: list[dict],
         channel_name: str,
         frame: cv2.Mat,
-        rgb_frame: Optional[cv2.Mat] = None,
     ) -> list[dict]:
         """Обрабатывает результаты распознавания и сохраняет события."""
         events: list[dict] = []
@@ -102,6 +86,7 @@ class EventWriter:
                 "confidence": res.get("confidence", 0.0),
                 "source": source,
                 "direction": res.get("direction"),
+                "bbox": res.get("bbox"),
             }
 
             x1, y1, x2, y2 = res.get("bbox", (0, 0, 0, 0))
@@ -110,9 +95,6 @@ class EventWriter:
             frame_path, plate_path = self._build_screenshot_paths(channel_name, event["plate"])
             event["frame_path"] = self._save_bgr_image(frame_path, frame)
             event["plate_path"] = self._save_bgr_image(plate_path, plate_crop)
-
-            event["frame_image"] = self._to_qimage(rgb_frame, is_rgb=True)
-            event["plate_image"] = self._to_qimage(plate_crop) if plate_crop is not None else None
 
             event["id"] = await self._storage.insert_event_async(
                 channel=event["channel"],
