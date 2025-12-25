@@ -203,11 +203,6 @@ class SettingsManager:
             "motion_frame_stride": 1,
             "motion_activation_frames": 3,
             "motion_release_frames": 6,
-            "debug": {
-                "show_detection_boxes": False,
-                "show_ocr_text": False,
-                "show_direction_tracks": False,
-            },
             "size_filter_enabled": True,
             "min_plate_size": size_defaults["min_plate_size"].copy(),
             "max_plate_size": size_defaults["max_plate_size"].copy(),
