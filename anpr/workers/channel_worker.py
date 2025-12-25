@@ -8,6 +8,7 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 import threading
 import atexit
+import logging
 from multiprocessing import shared_memory
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -227,10 +228,11 @@ class ChannelRuntimeConfig:
     direction: DirectionSettings
 
     @classmethod
-    def from_dict(cls, channel_conf: Dict[str, Any]) -> "ChannelRuntimeConfig":
+    def from_dict(cls, channel_conf: Dict[str, Any], debug_settings: Optional[Dict[str, Any]] = None) -> "ChannelRuntimeConfig":
         settings = SettingsManager()
         size_defaults = settings.get_plate_size_defaults()
         direction_defaults = settings.get_direction_defaults()
+        resolved_debug = debug_settings if debug_settings is not None else channel_conf.get("debug")
         return cls(
             name=channel_conf.get("name", "Канал"),
             source=str(channel_conf.get("source", "0")),
@@ -245,7 +247,7 @@ class ChannelRuntimeConfig:
             motion_release_frames=int(channel_conf.get("motion_release_frames", 6)),
             roi_enabled=bool(channel_conf.get("roi_enabled", True)),
             region=Region.from_dict(channel_conf.get("region")),
-            debug=DebugOptions.from_dict(channel_conf.get("debug")),
+            debug=DebugOptions.from_dict(resolved_debug),
             size_filter_enabled=bool(channel_conf.get("size_filter_enabled", True)),
             min_plate_size=PlateSize.from_dict(
                 channel_conf.get("min_plate_size"),
@@ -427,11 +429,12 @@ class ChannelWorker(QtCore.QThread):
         screenshot_dir: str,
         reconnect_conf: Optional[Dict[str, Any]] = None,
         plate_config: Optional[Dict[str, Any]] = None,
+        debug_settings: Optional[Dict[str, Any]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.channel_id = int(channel_conf.get("id", 0))
-        self.config = ChannelRuntimeConfig.from_dict(channel_conf)
+        self.config = ChannelRuntimeConfig.from_dict(channel_conf, debug_settings)
         self.reconnect_policy = ReconnectPolicy.from_dict(reconnect_conf)
         self.db_path = db_path
         self.screenshot_dir = screenshot_dir
@@ -469,9 +472,10 @@ class ChannelWorker(QtCore.QThread):
         channel_conf: Dict[str, Any],
         reconnect_conf: Optional[Dict[str, Any]] = None,
         plate_config: Optional[Dict[str, Any]] = None,
+        debug_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Обновляет параметры канала без перезапуска потока."""
-        new_config = ChannelRuntimeConfig.from_dict(channel_conf)
+        new_config = ChannelRuntimeConfig.from_dict(channel_conf, debug_settings)
         new_reconnect = ReconnectPolicy.from_dict(reconnect_conf)
         motion_config = MotionDetectorConfig(
             threshold=new_config.motion_threshold,
@@ -794,6 +798,33 @@ class ChannelWorker(QtCore.QThread):
             ]
             if confidences:
                 self._confidence_scores.extend(confidences)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Канал %s: обработка кадра в ROI %s — детекций=%d, результатов=%d, задержка=%.1f мс",
+                    channel_name,
+                    roi_rect,
+                    len(detections),
+                    len(results),
+                    latency_ms,
+                )
+                for res in results:
+                    text = res.get("text") or res.get("original_text") or ""
+                    logger.debug(
+                        "Канал %s: OCR='%s' (%.2f) трек=%s направление=%s",
+                        channel_name,
+                        text or "—",
+                        float(res.get("confidence", 0.0) or 0.0),
+                        res.get("track_id"),
+                        res.get("direction"),
+                    )
+            if results:
+                summary_parts = []
+                for res in results:
+                    text = res.get("text") or res.get("original_text") or ""
+                    summary_parts.append(
+                        f"{text or '—'} (conf={float(res.get('confidence', 0.0) or 0.0):.2f}, track={res.get('track_id')}, dir={res.get('direction')})"
+                    )
+                logger.info("Канал %s: OCR результаты — %s", channel_name, "; ".join(summary_parts))
             events = await event_writer.write_events(
                 source,
                 results,
