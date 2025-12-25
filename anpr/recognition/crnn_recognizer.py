@@ -23,7 +23,14 @@ class CRNNRecognizer:
     """Подготовка, загрузка и инференс CRNN."""
 
     def __init__(self, model_path: str, device: torch.device) -> None:
-        self.device = device
+        target_device = device
+        if device.type != "cpu":
+            logger.warning(
+                "Квантованная OCR-модель поддерживает только CPU. Переключаемся на CPU вместо %s.", device
+            )
+            target_device = torch.device("cpu")
+
+        self.device = target_device
         config = Config()
         self.transform = transforms.Compose(
             [
@@ -45,9 +52,9 @@ class CRNNRecognizer:
         model_prepared = quantize_fx.prepare_fx(model_to_load, qconfig_mapping, example_inputs)
         model_quantized = quantize_fx.convert_fx(model_prepared)
 
-        model_quantized.load_state_dict(torch.load(model_path, map_location=device))
-        self.model = model_quantized.to(device)
-        logger.info("Распознаватель OCR (INT8) успешно загружен (model=%s, device=%s)", model_path, device)
+        model_quantized.load_state_dict(torch.load(model_path, map_location=self.device))
+        self.model = model_quantized.to(self.device)
+        logger.info("Распознаватель OCR (INT8) успешно загружен (model=%s, device=%s)", model_path, self.device)
 
     @torch.no_grad()
     def recognize_batch(self, plate_images: Iterable[np.ndarray]) -> List[Tuple[str, float]]:
@@ -99,4 +106,3 @@ class CRNNRecognizer:
             results.append((text, avg_confidence))
 
         return results
-
