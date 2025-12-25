@@ -32,7 +32,35 @@ class YOLODetector:
         self._max_plate_size = max_plate_size or {}
         self._size_filter_enabled = bool(size_filter_enabled)
         self._tracking_supported = True
+        self._last_frame_shape: Optional[tuple[int, ...]] = None
         logger.info("Детектор YOLO успешно загружен (model=%s, device=%s)", model_path, device)
+
+    def _reset_tracker_state(self) -> None:
+        """Сбрасывает состояние трекера YOLO при смене входного разрешения."""
+        predictor = getattr(self.model, "predictor", None)
+        trackers = getattr(predictor, "trackers", None) if predictor else None
+        if not trackers:
+            return
+
+        for tracker in trackers:
+            try:
+                if hasattr(tracker, "reset"):
+                    tracker.reset()
+            except Exception:
+                logger.debug("Не удалось сбросить состояние трекера YOLO", exc_info=True)
+
+        if predictor and hasattr(predictor, "vid_path"):
+            predictor.vid_path = [None] * len(trackers)
+
+    def _maybe_reset_tracker(self, frame_shape: tuple[int, ...]) -> None:
+        if self._last_frame_shape and self._last_frame_shape != frame_shape:
+            logger.debug(
+                "Сбрасываем состояние YOLO-трекера из-за смены размера кадра: %s -> %s",
+                self._last_frame_shape,
+                frame_shape,
+            )
+            self._reset_tracker_state()
+        self._last_frame_shape = frame_shape
 
     def _filter_by_size(self, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not detections:
@@ -68,6 +96,10 @@ class YOLODetector:
         return filtered
 
     def detect(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        if frame is None or frame.size == 0:
+            return []
+
+        self._maybe_reset_tracker(frame.shape)
         detections = self.model.predict(frame, verbose=False, device=self.device)
         results: List[Dict[str, Any]] = []
         for det in detections[0].boxes.data:
@@ -98,6 +130,10 @@ class YOLODetector:
         return self._filter_by_size(results)
 
     def track(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        if frame is None or frame.size == 0:
+            return []
+
+        self._maybe_reset_tracker(frame.shape)
         if not self._tracking_supported:
             return self.detect(frame)
 
@@ -109,5 +145,6 @@ class YOLODetector:
             return self.detect(frame)
         except Exception:
             self._tracking_supported = False
+            self._reset_tracker_state()
             logger.exception("Отключаем трекинг YOLO из-за ошибки, переключаемся на detect")
             return self.detect(frame)
