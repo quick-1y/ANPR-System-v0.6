@@ -75,6 +75,7 @@ class SettingsManager:
             "ocr": self._ocr_defaults(),
             "detector": self._detector_defaults(),
             "inference": self._inference_defaults(),
+            "debug": self._debug_defaults(),
             "grid": "2x2",
             "theme": "dark",
             "channels": [],
@@ -133,6 +134,7 @@ class SettingsManager:
         ocr_defaults = self._ocr_defaults()
         detector_defaults = self._detector_defaults()
         inference_defaults = self._inference_defaults()
+        debug_defaults = self._debug_defaults()
 
         if not data.get("theme"):
             data["theme"] = "dark"
@@ -178,6 +180,9 @@ class SettingsManager:
         if self._fill_time_defaults(data, time_defaults):
             changed = True
 
+        if self._fill_debug_defaults(data, debug_defaults):
+            changed = True
+
         if changed:
             self._save(data)
         return data
@@ -186,7 +191,6 @@ class SettingsManager:
     def _channel_defaults(tracking_defaults: Dict[str, Any]) -> Dict[str, Any]:
         size_defaults = plate_size_defaults()
         return {
-            "enabled": True,
             "best_shots": int(tracking_defaults.get("best_shots", 3)),
             "cooldown_seconds": int(tracking_defaults.get("cooldown_seconds", 5)),
             "ocr_min_confidence": float(tracking_defaults.get("ocr_min_confidence", 0.6)),
@@ -207,6 +211,15 @@ class SettingsManager:
             "size_filter_enabled": True,
             "min_plate_size": size_defaults["min_plate_size"].copy(),
             "max_plate_size": size_defaults["max_plate_size"].copy(),
+        }
+
+    @staticmethod
+    def _debug_defaults() -> Dict[str, Any]:
+        return {
+            "show_detection_boxes": False,
+            "show_ocr_text": False,
+            "show_direction_tracks": False,
+            "log_panel_enabled": False,
         }
 
     @staticmethod
@@ -341,6 +354,20 @@ class SettingsManager:
                         reconnect_section[key][sub_key] = sub_val
                         changed = True
         data["reconnect"] = reconnect_section
+        return changed
+
+    def _fill_debug_defaults(self, data: Dict[str, Any], defaults: Dict[str, Any]) -> bool:
+        if "debug" not in data:
+            data["debug"] = defaults
+            return True
+
+        changed = False
+        debug_section = data.get("debug", {})
+        for key, value in defaults.items():
+            if key not in debug_section:
+                debug_section[key] = value
+                changed = True
+        data["debug"] = debug_section
         return changed
 
     def _fill_storage_defaults(self, data: Dict[str, Any], defaults: Dict[str, Any]) -> bool:
@@ -654,6 +681,19 @@ class SettingsManager:
     def get_logging_config(self) -> Dict[str, Any]:
         with self._file_lock:
             return copy.deepcopy(self.settings.get("logging", {}))
+
+    def get_debug_settings(self) -> Dict[str, Any]:
+        with self._file_lock:
+            if self._fill_debug_defaults(self.settings, self._debug_defaults()):
+                settings_snapshot = copy.deepcopy(self.settings)
+                self._save(settings_snapshot)
+            return copy.deepcopy(self.settings.get("debug", {}))
+
+    def save_debug_settings(self, debug_settings: Dict[str, Any]) -> None:
+        with self._file_lock:
+            self.settings["debug"] = debug_settings
+            settings_snapshot = copy.deepcopy(self.settings)
+        self._save(settings_snapshot)
 
     def get_model_settings(self) -> Dict[str, Any]:
         with self._file_lock:
