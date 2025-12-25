@@ -1545,6 +1545,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self._draw_grid()
         return widget
 
+    def _build_debug_settings_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._apply_stylesheet(
+            scroll,
+            lambda: (
+                f"QScrollArea {{ background: transparent; border: none; }}"
+                f"QScrollArea > QWidget > QWidget {{ background-color: {self.colors['surface']}; }}"
+            ),
+        )
+
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+        self._apply_stylesheet(widget, lambda: self.form_style)
+
+        debug_group = QtWidgets.QGroupBox("Глобальный Debug")
+        self._apply_stylesheet(debug_group, lambda: self.group_box_style)
+        debug_form = QtWidgets.QFormLayout(debug_group)
+        self._tune_form_layout(debug_form)
+
+        overlay_row = QtWidgets.QHBoxLayout()
+        overlay_row.setSpacing(10)
+        self.debug_detection_global_checkbox = QtWidgets.QCheckBox("Рамки детекции")
+        self.debug_ocr_global_checkbox = QtWidgets.QCheckBox("Символы OCR")
+        self.debug_direction_global_checkbox = QtWidgets.QCheckBox("Трек движения")
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+        ):
+            overlay_row.addWidget(checkbox)
+        overlay_row.addStretch(1)
+        debug_form.addRow("Оверлеи:", overlay_row)
+
+        self.debug_log_checkbox = QtWidgets.QCheckBox("Лог")
+        self.debug_log_checkbox.setToolTip("Показывать поток логов под сеткой наблюдения во вкладке «Наблюдение»")
+        debug_form.addRow("Логирование:", self.debug_log_checkbox)
+
+        for checkbox in (
+            self.debug_detection_global_checkbox,
+            self.debug_ocr_global_checkbox,
+            self.debug_direction_global_checkbox,
+            self.debug_log_checkbox,
+        ):
+            checkbox.stateChanged.connect(self._on_debug_settings_changed)
+
+        layout.addWidget(debug_group)
+        layout.addStretch(1)
+        scroll.setWidget(widget)
+
+        self._load_debug_settings()
+        return scroll
+
     def _polish_button(self, button: QtWidgets.QPushButton, min_width: int = 140) -> None:
         def apply_style() -> None:
             button.setStyleSheet(self.primary_hollow_button)
@@ -2534,11 +2591,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_stylesheet(self.settings_nav, lambda: self.list_style)
         self.settings_nav.addItem("Общие")
         self.settings_nav.addItem("Каналы")
+        self.settings_nav.addItem("Debug")
         content_layout.addWidget(self.settings_nav)
 
         self.settings_stack = QtWidgets.QStackedWidget()
         self.settings_stack.addWidget(self._build_general_settings_tab())
         self.settings_stack.addWidget(self._build_channel_settings_tab())
+        self.settings_stack.addWidget(self._build_debug_settings_tab())
         content_layout.addWidget(self.settings_stack, 1)
 
         layout.addWidget(content, 1)
@@ -3243,6 +3302,12 @@ class MainWindow(QtWidgets.QMainWindow):
         adjusted_dt = QtCore.QDateTime.currentDateTime().addSecs(offset_minutes * 60)
         self.time_correction_input.setDateTime(adjusted_dt)
         self._load_debug_settings()
+
+    def _load_debug_settings(self) -> None:
+        debug_settings = self.settings.get_debug_settings()
+        self._debug_settings_cache = debug_settings
+        self._apply_debug_settings_to_ui()
+        self._set_log_panel_visible(debug_settings.get("log_panel_enabled", False))
 
     def _load_debug_settings(self) -> None:
         debug_settings = self.settings.get_debug_settings()
