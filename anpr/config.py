@@ -85,6 +85,14 @@ class Config:
     def detection_confidence_threshold(self) -> float:
         return float(self.detector_config.get("confidence_threshold", 0.5))
 
+    @property
+    def bbox_padding_ratio(self) -> float:
+        return float(self.detector_config.get("bbox_padding_ratio", 0.0))
+
+    @property
+    def min_padding_pixels(self) -> int:
+        return int(self.detector_config.get("min_padding_pixels", 0))
+
     # --------------------------- Делегаты UI -----------------------------
     def __getattr__(self, name: str):
         """Делегирует неизвестные атрибуты во внутренний SettingsManager."""

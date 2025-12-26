@@ -292,7 +292,11 @@ class SettingsManager:
 
     @staticmethod
     def _detector_defaults() -> Dict[str, Any]:
-        return {"confidence_threshold": 0.5}
+        return {
+            "confidence_threshold": 0.5,
+            "bbox_padding_ratio": 0.08,
+            "min_padding_pixels": 2,
+        }
 
     @staticmethod
     def _time_defaults() -> Dict[str, Any]:
