@@ -104,6 +104,8 @@ def build_components(
         max_plate_size=max_plate_size,
         size_filter_enabled=size_filter_enabled,
         detection_confidence_threshold=config.detection_confidence_threshold,
+        bbox_padding_ratio=config.bbox_padding_ratio,
+        min_padding_pixels=config.min_padding_pixels,
     )
     recognizer = _get_shared_recognizer()
     postprocessor = _build_postprocessor(plate_config or {})

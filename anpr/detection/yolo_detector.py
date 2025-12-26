@@ -25,6 +25,8 @@ class YOLODetector:
         max_plate_size: Optional[Dict[str, int]] = None,
         size_filter_enabled: bool = True,
         detection_confidence_threshold: float = 0.5,
+        bbox_padding_ratio: float = 0.08,
+        min_padding_pixels: int = 2,
     ) -> None:
         self.model = YOLO(model_path)
         self.model.to(device)
@@ -35,6 +37,8 @@ class YOLODetector:
         self._tracking_supported = True
         self._confidence_threshold = max(0.0, min(1.0, float(detection_confidence_threshold)))
         self._last_frame_shape: Optional[tuple[int, ...]] = None
+        self._bbox_padding_ratio = max(0.0, float(bbox_padding_ratio))
+        self._min_padding_pixels = max(0, int(min_padding_pixels))
         logger.info("Детектор YOLO успешно загружен (model=%s, device=%s)", model_path, device)
 
     def _reset_tracker_state(self) -> None:
@@ -121,6 +125,42 @@ class YOLODetector:
 
         return filtered
 
+    def _expand_bbox(self, bbox: List[int], frame_shape: tuple[int, ...]) -> List[int]:
+        if len(bbox) != 4 or len(frame_shape) < 2:
+            return bbox
+
+        frame_height, frame_width = frame_shape[:2]
+        if frame_width <= 0 or frame_height <= 0:
+            return bbox
+
+        x1, y1, x2, y2 = map(int, bbox)
+        pad_w = max(int((x2 - x1) * self._bbox_padding_ratio), self._min_padding_pixels)
+        pad_h = max(int((y2 - y1) * self._bbox_padding_ratio), self._min_padding_pixels)
+
+        expanded = [
+            max(0, x1 - pad_w),
+            max(0, y1 - pad_h),
+            min(frame_width, x2 + pad_w),
+            min(frame_height, y2 + pad_h),
+        ]
+
+        if expanded[2] <= expanded[0] or expanded[3] <= expanded[1]:
+            return bbox
+
+        return expanded
+
+    def _expand_detections(self, detections: List[Dict[str, Any]], frame_shape: tuple[int, ...]) -> List[Dict[str, Any]]:
+        expanded: List[Dict[str, Any]] = []
+        for det in detections:
+            bbox = det.get("bbox")
+            if not bbox:
+                expanded.append(det)
+                continue
+            det_copy = det.copy()
+            det_copy["bbox"] = self._expand_bbox(list(bbox), frame_shape)
+            expanded.append(det_copy)
+        return expanded
+
     def detect(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         if frame is None or frame.size == 0:
             return []
@@ -149,7 +189,8 @@ class YOLODetector:
                 results.append(
                     {"bbox": [int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])], "confidence": float(conf)}
                 )
-        return self._filter_by_size(results)
+        filtered = self._filter_by_size(results)
+        return self._expand_detections(filtered, frame.shape)
 
     def _track_internal(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         detections = self.model.track(frame, persist=True, verbose=False, device=self.device)
@@ -171,7 +212,8 @@ class YOLODetector:
                         "track_id": track_id,
                     }
                 )
-        return self._filter_by_size(results)
+        filtered = self._filter_by_size(results)
+        return self._expand_detections(filtered, frame.shape)
 
     def track(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         if frame is None or frame.size == 0:
